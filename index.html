@@ -70,6 +70,54 @@ button{font:inherit}
 @media(max-width:1000px){.sidebar{width:190px}.main{width:calc(100% - 190px);margin-left:190px}.content{padding:25px}.summary-grid{grid-template-columns:repeat(2,1fr)}.grid-2,.bottom{grid-template-columns:1fr}}
 @media(max-width:700px){.app{display:block}.sidebar{position:relative;width:100%;height:auto;padding:14px;border-right:0;border-bottom:1px solid #e5e7eb}.logo{padding:4px 10px 12px}.menu-title{display:none}.menu-section{display:flex;overflow-x:auto;padding-bottom:4px;margin:3px 0}.menu-button{width:auto;white-space:nowrap;margin-right:4px}.main{width:100%;margin-left:0}.topbar{padding:0 18px}.update{display:none}.content{padding:20px 15px 40px}.summary-grid{gap:10px}.summary-card{padding:16px}.summary-value{font-size:20px}.donut-wrap{flex-direction:column;gap:20px}}
 </style>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+    import {
+      getAuth,
+      GoogleAuthProvider,
+      signInWithPopup,
+      signOut,
+      onAuthStateChanged
+    } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyDlo1aIBWPt1NOFrRGs1TQzBy4Quzi88ck",
+      authDomain: "nest-68983.firebaseapp.com",
+      projectId: "nest-68983",
+      storageBucket: "nest-68983.firebasestorage.app",
+      messagingSenderId: "588796407921",
+      appId: "1:588796407921:web:2a2056f1aaa015a7de2bd0"
+    };
+
+    const firebaseApp = initializeApp(firebaseConfig);
+    const nestAuth = getAuth(firebaseApp);
+    const googleProvider = new GoogleAuthProvider();
+
+    window.NEST_AUTH = { nestAuth, googleProvider, signInWithPopup, signOut };
+
+    window.nestLogin = async function () {
+      const result = await signInWithPopup(nestAuth, googleProvider);
+      return result.user;
+    };
+
+    window.nestLogout = async function () {
+      await signOut(nestAuth);
+    };
+
+    onAuthStateChanged(nestAuth, (user) => {
+      window.NEST_USER = user || null;
+      window.dispatchEvent(new CustomEvent("nest-auth-changed", {
+        detail: user ? {
+          uid: user.uid,
+          displayName: user.displayName || "",
+          email: user.email || "",
+          photoURL: user.photoURL || ""
+        } : null
+      }));
+    });
+  </script>
+
 </head>
 <body>
 <div class="app">
@@ -81,6 +129,8 @@ button{font:inherit}
   <button class="menu-button" data-page="병원">병원</button>
   <button class="menu-button" data-page="남편">남편</button>
   <button class="menu-button" data-page="나">나</button>
+  <button class="menu-button" data-page="첫째">첫째</button>
+  <button class="menu-button" data-page="둘째">둘째</button>
   <button class="menu-button" data-page="가정">가정</button>
   <button class="menu-button" data-page="교육비">교육비</button>
 
@@ -96,12 +146,28 @@ button{font:inherit}
 
   <div class="menu-title">시스템</div>
   <button class="menu-button" data-page="설정">설정</button>
+
+      <div id="NEST_AUTH_UI" style="margin:18px 0 0;padding-top:16px;border-top:1px solid rgba(255,255,255,.12);">
+        <div id="nestSignedOut" style="display:none;">
+          <button type="button" onclick="nestLogin()" style="width:100%;padding:10px 12px;border:0;border-radius:10px;cursor:pointer;font-weight:700;">
+            Google로 로그인
+          </button>
+        </div>
+        <div id="nestSignedIn" style="display:none;">
+          <div id="nestUserName" style="font-size:13px;font-weight:700;margin-bottom:3px;"></div>
+          <div id="nestUserEmail" style="font-size:11px;opacity:.72;word-break:break-all;margin-bottom:9px;"></div>
+          <button type="button" onclick="nestLogout()" style="padding:7px 10px;border:1px solid rgba(255,255,255,.2);background:transparent;color:inherit;border-radius:8px;cursor:pointer;">
+            로그아웃
+          </button>
+        </div>
+      </div>
+
 </aside>
 
 <main class="main">
   <header class="topbar">
     <div class="page-title" id="pageTitle">전체</div>
-    <div class="update">마지막 업데이트 2026.09.30 10:20</div>
+    <div class="update">실제 데이터 연결 전</div>
   </header>
   <section class="content" id="content"></section>
 </main>
@@ -128,182 +194,94 @@ button{font:inherit}
 
 <script>
 const data = {
-  전체: `
-    <div class="page-intro"><h1>우리 가족의 재무 현황</h1><p>2026년 9월 30일 기준</p></div>
-    <div class="summary-grid">
-      ${card("총자산","5.2억","전월 대비 +320만원")}
-      ${card("순자산","4.1억","전월 대비 +280만원")}
-      ${card("이번 달 수입","1,240만원","전월 대비 +4.2%")}
-      ${card("이번 달 지출","730만원","전월 대비 -2.1%")}
-    </div>
+  전체: emptyDashboard(
+    "우리 가족의 재무 현황",
+    "금융·자산 데이터를 연결하면 이곳에 실제 현황이 표시됩니다.",
+    ["총자산","순자산","이번 달 수입","이번 달 지출"],
+    `
     <div class="grid-2">
       <div class="card">${headerWithControl("순자산 추이", `<select class="select-control" id="netWorthPeriod" onchange="changeNetWorthPeriod(this.value)">
-      <option value="3">최근 3개월</option>
-      <option value="6">최근 6개월</option>
-      <option value="9" selected>최근 9개월</option>
-      <option value="12">최근 1년</option>
-      <option value="36">최근 3년</option>
-      <option value="60">최근 5년</option>
-      <option value="120">최근 10년</option>
-      <option value="all">전체</option>
-    </select>`) }
-        <div class="chart"><svg viewBox="0 0 600 180" preserveAspectRatio="none"><polyline points="0,150 70,143 140,138 210,125 280,130 350,108 420,95 500,72 600,45" fill="none" stroke="#536779" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="600" cy="45" r="6" fill="#536779"/></svg></div>
-        <div class="axis"><span>1월</span><span>3월</span><span>5월</span><span>7월</span><span>9월</span></div>
+        <option value="3">최근 3개월</option><option value="6">최근 6개월</option><option value="9" selected>최근 9개월</option><option value="12">최근 1년</option><option value="36">최근 3년</option><option value="60">최근 5년</option><option value="120">최근 10년</option><option value="all">전체</option>
+      </select>`)}
+        <div class="empty" style="margin-top:10px">연결된 자산 데이터가 없습니다.<br>Firebase 연결 후 실제 월별 순자산이 표시됩니다.</div>
       </div>
       <div class="card">${headerWithControl("자산 구성", `<button class="manage-button" onclick="openAssetManager()">항목 관리</button>`)}
-        <div class="donut-wrap"><div class="donut"></div><div class="legend"><div class="legend-item"><span class="dot"></span>투자 41%</div><div class="legend-item"><span class="dot"></span>예금 24%</div><div class="legend-item"><span class="dot"></span>부동산 25%</div><div class="legend-item"><span class="dot"></span>연금·기타 10%</div></div></div>
+        <div class="empty" style="margin-top:10px">등록된 자산이 없습니다.</div>
       </div>
     </div>
     <div class="grid-2">
-      <div class="card">${header("월별 현금흐름","수입 · 지출")}
-        <div class="bars">
-          ${barGroup(78,52)}${barGroup(72,49)}${barGroup(84,58)}${barGroup(76,54)}${barGroup(91,61)}${barGroup(88,57)}
-        </div><div class="months"><span>4월</span><span>5월</span><span>6월</span><span>7월</span><span>8월</span><span>9월</span></div>
+      <div class="card">${header("월별 현금흐름","실제 거래 연결 후 표시")}
+        <div class="empty">수입·지출 거래가 아직 연결되지 않았습니다.</div>
       </div>
-      <div class="card">${header("투자 현황","목표 대비 현재")}
-        <div class="alloc">
-          ${allocation("주식",52,"목표 40% · 현재 +12%p")}
-          ${allocation("채권",12,"목표 20% · 현재 -8%p")}
-          ${allocation("현금·예금",20,"목표 20% · 현재 ±0%p")}
-          ${allocation("기타",16,"목표 20% · 현재 -4%p")}
-        </div>
+      <div class="card">${header("투자 현황","실제 투자계좌 연결 후 표시")}
+        <div class="empty">등록된 투자자산이 없습니다.</div>
       </div>
     </div>
-
     <div class="grid-2">
-      <div class="card">
-        ${headerWithControl("교육비","학령기 자녀 2명")}
-        <div class="education-summary">
-          <div class="education-mini">
-            <div class="education-mini-label">이번 달</div>
-            <div class="education-mini-value">128만원</div>
-          </div>
-          <div class="education-mini">
-            <div class="education-mini-label">올해 누적</div>
-            <div class="education-mini-value">1,086만원</div>
-          </div>
-          <div class="education-mini">
-            <div class="education-mini-label">전월 대비</div>
-            <div class="education-mini-value">+12만원</div>
-          </div>
-        </div>
-        <div class="education-child">
-          <div class="education-child-row"><span>첫째</span><b>63만원</b></div>
-          <div class="education-child-row"><span>둘째</span><b>65만원</b></div>
-        </div>
+      <div class="card">${header("교육비","자녀별로 관리")}
+        <div class="empty">교육비 거래가 아직 등록되지 않았습니다.</div>
       </div>
-      <div class="card">
-        ${headerWithControl("교육비 구성","이번 달")}
-        <div class="list">
-          ${notice("학원","월 교육비","72만원")}
-          ${notice("예체능","음악·체육 등","28만원")}
-          ${notice("교재","문제집·교재","12만원")}
-          ${notice("기타","교구·대회 등","16만원")}
-        </div>
+      <div class="card">${header("교육비 구성","실제 거래 연결 후 표시")}
+        <div class="empty">교육비 데이터가 없습니다.</div>
       </div>
     </div>
-
     <div class="bottom">
       <div class="card">${header("이번 달 주요 변화")}
-        <div class="list">${notice("순자산이 증가했습니다","전월 대비 순자산 +280만원","+280만")}${notice("병원 지출이 증가했습니다","의약품 구매액이 전월보다 증가","+42만")}${notice("투자 비중이 변했습니다","주식 비중이 목표보다 높아졌습니다","+12%p")}</div>
+        <div class="empty">실제 데이터가 연결되면 변화 내역이 표시됩니다.</div>
       </div>
       <div class="card">${header("확인 필요")}
-        <div class="list">${notice("투자 비중 점검","목표 배분과 현재 배분의 차이가 있습니다","투자")}${notice("보험 자료 확인","분석하지 않은 보험증권 2건","보험")}${notice("금융 데이터 동기화","확인이 필요한 연결 1건","설정")}</div>
+        <div class="empty">현재 확인이 필요한 항목이 없습니다.</div>
       </div>
-    </div>`,
+    </div>`
+  ),
 
-  병원: page("병원 운영 현황","병원의 매출·지출·물품 흐름을 한눈에 확인합니다.",[
-    ["이번 달 매출","3,420만원","전월 대비 +3.8%"],
-    ["이번 달 지출","1,870만원","전월 대비 +6.1%"],
-    ["영업 잔액","1,550만원","이번 달 기준"],
-    ["물품 구매","428만원","전월 대비 +11.2%"]
-  ],`
-    <div class="grid-2"><div class="card">${header("매출·지출 추이","최근 12개월")}<div class="chart"><svg viewBox="0 0 600 180" preserveAspectRatio="none"><polyline points="0,130 80,110 160,120 240,95 320,105 400,78 500,70 600,48" fill="none" stroke="#536779" stroke-width="4"/></svg></div></div>
-    <div class="card">${header("지출 구성","이번 달")}<div class="donut-wrap"><div class="donut"></div><div class="legend"><div class="legend-item"><span class="dot"></span>인건비 38%</div><div class="legend-item"><span class="dot"></span>의약품 24%</div><div class="legend-item"><span class="dot"></span>소모품 18%</div><div class="legend-item"><span class="dot"></span>기타 20%</div></div></div></div></div>
-    <div class="card">${header("구매 예정 물품","Google Sheets 연동 예정")}<table class="table"><tr><th>품목</th><th>최근 구매</th><th>평균 주기</th><th>예상 구매</th></tr><tr><td>의약품 A</td><td>09/12</td><td>43일</td><td><span class="pill">10/25 예상</span></td></tr><tr><td>소모품 B</td><td>09/18</td><td>31일</td><td><span class="pill">10/19 예상</span></td></tr><tr><td>주사기</td><td>09/22</td><td>28일</td><td><span class="pill">10/20 예상</span></td></tr></table></div>`),
+  병원: emptyDashboard("병원 운영 현황","병원 금융·구매 데이터를 연결하면 실제 현황이 표시됩니다.",["이번 달 매출","이번 달 지출","영업 잔액","물품 구매"],`
+    <div class="grid-2"><div class="card">${header("매출·지출 추이","실제 데이터 연결 후 표시")}<div class="empty">병원 거래 데이터가 없습니다.</div></div>
+    <div class="card">${header("지출 구성","실제 데이터 연결 후 표시")}<div class="empty">병원 지출 데이터가 없습니다.</div></div></div>
+    <div class="card">${header("구매 예정 물품","Google Sheets 연결 후 표시")}<div class="empty">연결된 구매 데이터가 없습니다.</div></div>`),
 
-  남편: personalPage("남편","남편 개인의 수입·지출·투자·자산 현황입니다."),
-  나: personalPage("나","내 개인의 수입·지출·투자·자산 현황입니다."),
-  가정: personalPage("가정","부부와 가족 전체의 통합 재무 현황입니다."),
+  남편: emptyPersonPage("남편"),
+  나: emptyPersonPage("나"),
+  첫째: emptyPersonPage("첫째"),
+  둘째: emptyPersonPage("둘째"),
+  가정: emptyDashboard("가정","부부와 자녀를 포함한 가족 전체 재무를 표시합니다.",["총수입","총지출","총자산","순자산"],`<div class="empty">가족 금융 데이터가 연결되면 실제 통합 현황이 표시됩니다.</div>`),
 
+  교육비: emptyDashboard("교육비","두 자녀의 교육비를 자녀별·항목별·월별로 관리합니다.",["이번 달 교육비","올해 누적","첫째","둘째"],`
+    <div class="grid-2"><div class="card">${header("월별 교육비","실제 거래 연결 후 표시")}<div class="empty">교육비 거래가 없습니다.</div></div>
+    <div class="card">${header("자녀별 교육비","실제 거래 연결 후 표시")}<div class="empty">자녀별 교육비 데이터가 없습니다.</div></div></div>
+    <div class="card">${headerWithControl("교육비 항목","사용자 정의 가능")}<div class="empty">아직 등록된 교육비 데이터가 없습니다.</div><button class="manage-button" style="margin-top:15px" onclick="openEducationManager()">교육비 항목 관리</button></div>`),
 
-  교육비: page("교육비","두 자녀의 교육비를 자녀별·항목별·월별로 관리합니다.",[
-    ["이번 달 교육비","128만원","두 자녀 합계"],
-    ["올해 누적","1,086만원","2026년 누계"],
-    ["첫째","63만원","이번 달"],
-    ["둘째","65만원","이번 달"]
-  ],`
-    <div class="grid-2">
-      <div class="card">${headerWithControl("월별 교육비","2026년")}
-        <div class="chart"><svg viewBox="0 0 600 180" preserveAspectRatio="none">
-          <polyline points="0,150 70,142 140,130 210,125 280,112 350,105 420,90 500,78 600,62" fill="none" stroke="#536779" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg></div>
-        <div class="axis"><span>1월</span><span>3월</span><span>5월</span><span>7월</span><span>9월</span></div>
-      </div>
-      <div class="card">${headerWithControl("자녀별 교육비","이번 달")}
-        <div class="list">
-          ${notice("첫째","이번 달 교육비","63만원")}
-          ${notice("둘째","이번 달 교육비","65만원")}
-        </div>
-      </div>
-    </div>
-    <div class="card">${headerWithControl("교육비 항목","사용자가 직접 관리") }
-      <table class="table"><tr><th>항목</th><th>이번 달</th><th>올해 누적</th><th>관리</th></tr>
-      <tr><td>학원</td><td>72만원</td><td>612만원</td><td><span class="pill">활성</span></td></tr>
-      <tr><td>예체능</td><td>28만원</td><td>248만원</td><td><span class="pill">활성</span></td></tr>
-      <tr><td>교재</td><td>12만원</td><td>106만원</td><td><span class="pill">활성</span></td></tr>
-      <tr><td>기타</td><td>16만원</td><td>120만원</td><td><span class="pill">활성</span></td></tr></table>
-      <button class="manage-button" style="margin-top:15px" onclick="openEducationManager()">교육비 항목 관리</button>
+  투자: emptyDashboard("투자","가족 구성원별 투자자산을 소유자 기준으로 관리합니다.",["전체 투자자산","전체 평가손익","전체 수익률","위험자산"],`
+    <div class="card">${header("투자자별 현황","남편 · 나 · 첫째 · 둘째")}
+      <table class="table"><tr><th>소유자</th><th>평가금액</th><th>평가손익</th><th>수익률</th></tr>
+      <tr><td>남편</td><td>—</td><td>—</td><td>—</td></tr><tr><td>나</td><td>—</td><td>—</td><td>—</td></tr><tr><td>첫째</td><td>—</td><td>—</td><td>—</td></tr><tr><td>둘째</td><td>—</td><td>—</td><td>—</td></tr></table>
+      <div class="modal-note">실제 계좌를 연결하면 계좌별 보유자산과 평가금액이 자동 집계됩니다.</div>
     </div>`),
 
-  투자: page("투자","전체 투자자산의 규모와 목표 대비 현재 비중을 확인합니다.",[
-    ["투자자산","2.18억원","전체 자산의 41%"],
-    ["평가손익","+4,320만원","현재 기준"],
-    ["수익률","+24.7%","전체 투자"],
-    ["위험자산","1.61억원","투자자산 중 74%"]
-  ],`
-    <div class="grid-2"><div class="card">${header("현재 자산 배분","전체 투자")}<div class="donut-wrap"><div class="donut"></div><div class="legend"><div class="legend-item"><span class="dot"></span>주식 52%</div><div class="legend-item"><span class="dot"></span>ETF 24%</div><div class="legend-item"><span class="dot"></span>현금 12%</div><div class="legend-item"><span class="dot"></span>기타 12%</div></div></div></div>
-    <div class="card">${header("목표 대비 현재","설정한 목표 배분")}<div class="alloc">${allocation("주식",52,"목표 40% · +12%p")}${allocation("채권",12,"목표 20% · -8%p")}${allocation("현금",12,"목표 15% · -3%p")}</div></div></div>
-    <div class="card">${header("보유 자산","예시 데이터")}<table class="table"><tr><th>자산</th><th>평가금액</th><th>수익률</th><th>비중</th></tr><tr><td>주식 A</td><td>5,200만원</td><td>+31.2%</td><td>24%</td></tr><tr><td>ETF B</td><td>3,800만원</td><td>+18.4%</td><td>17%</td></tr><tr><td>ETF C</td><td>2,100만원</td><td>+12.1%</td><td>10%</td></tr></table></div>`),
+  보험: emptyDashboard("보험","보험증권을 업로드하면 실제 계약 내용을 정리합니다.",["월 보험료","남편","나","자녀"],`<div class="card">${header("보험 목록","증권 업로드 후 분석")}<div class="empty">분석된 보험증권이 없습니다.</div></div>`),
 
-  보험: page("보험","보험증권을 바탕으로 보험료와 보장을 정리하는 공간입니다.",[
-    ["월 보험료","87만원","가족 전체"],
-    ["남편","42만원","월 보험료"],
-    ["나","31만원","월 보험료"],
-    ["자녀","14만원","월 보험료"]
-  ],`<div class="card">${header("보험 목록","증권 분석 후 자동 정리")}<table class="table"><tr><th>대상</th><th>보험</th><th>월 보험료</th><th>형태</th><th>상태</th></tr><tr><td>남편</td><td>보험 A</td><td>180,000원</td><td>갱신형</td><td><span class="pill">분석 완료</span></td></tr><tr><td>나</td><td>보험 B</td><td>110,000원</td><td>비갱신형</td><td><span class="pill">분석 완료</span></td></tr><tr><td>자녀</td><td>보험 C</td><td>70,000원</td><td>비갱신형</td><td><span class="pill">분석 필요</span></td></tr></table></div>`),
+  연금: emptyDashboard("연금","공무원연금·연금저축·IRP·개인연금을 통합해서 봅니다.",["예상 월 연금","공무원연금","연금저축","IRP·기타"],`<div class="card">${header("예상 은퇴 후 월 연금","실제 자료 입력 후 계산")}<div class="empty">연금 데이터가 없습니다.</div></div>`),
 
-  연금: page("연금","공무원연금·연금저축·IRP·개인연금을 통합해서 봅니다.",[
-    ["예상 월 연금","320만원","현재 설정 기준"],
-    ["공무원연금","220만원","예상액"],
-    ["연금저축","55만원","예상액"],
-    ["IRP·기타","45만원","예상액"]
-  ],`<div class="card">${header("예상 은퇴 후 월 연금","예상치")}<div class="chart"><svg viewBox="0 0 600 180" preserveAspectRatio="none"><polyline points="0,155 100,145 200,125 300,110 400,80 500,62 600,45" fill="none" stroke="#536779" stroke-width="4"/></svg></div><div class="axis"><span>55세</span><span>60세</span><span>65세</span><span>70세</span><span>75세</span></div></div>`),
+  자산: emptyDashboard("자산","예금·투자·연금·부동산·기타 자산과 부채를 통합합니다.",["총자산","총부채","순자산","전월 순자산"],`<div class="grid-2"><div class="card">${headerWithControl("자산 구성",`<button class="manage-button" onclick="openAssetManager()">항목 관리</button>`)}<div class="empty">등록된 자산이 없습니다.</div></div><div class="card">${header("부채","실제 데이터 연결 후 표시")}<div class="empty">등록된 부채가 없습니다.</div></div></div>`),
 
-  자산: page("자산","예금·투자·연금·부동산·기타 자산과 부채를 통합합니다.",[
-    ["총자산","5.2억원","현재 기준"],
-    ["총부채","1.1억원","현재 기준"],
-    ["순자산","4.1억원","총자산 - 부채"],
-    ["전월 순자산","3.82억원","전월 기준"]
-  ],`<div class="grid-2"><div class="card">${header("자산 구성","현재")}<div class="donut-wrap"><div class="donut"></div><div class="legend"><div class="legend-item"><span class="dot"></span>투자 41%</div><div class="legend-item"><span class="dot"></span>예금 24%</div><div class="legend-item"><span class="dot"></span>부동산 25%</div><div class="legend-item"><span class="dot"></span>연금·기타 10%</div></div></div></div><div class="card">${header("부채","현재")}<table class="table"><tr><th>항목</th><th>잔액</th></tr><tr><td>주택대출</td><td>9,000만원</td></tr><tr><td>기타</td><td>2,000만원</td></tr></table></div></div>`),
+  거래: emptyDashboard("거래","은행·카드·기타 금융기관에서 들어온 거래를 통합합니다.",["이번 달 거래","자동 분류","확인 필요","동기화 상태"],`<div class="card">${header("최근 거래","금융기관 연결 후 표시")}<div class="empty">연결된 거래가 없습니다.</div></div>`),
 
-  거래: page("거래","은행·카드·기타 금융기관에서 들어온 거래를 통합합니다.",[
-    ["이번 달 거래","184건","전체"],
-    ["자동 분류","171건","92.9%"],
-    ["확인 필요","13건","사용자 확인"],
-    ["동기화 상태","정상","최근 업데이트"]
-  ],`<div class="card">${header("최근 거래","예시 데이터")}<table class="table"><tr><th>날짜</th><th>내용</th><th>금액</th><th>분류</th></tr><tr><td>09/30</td><td>○○마트</td><td>-82,000원</td><td>가정/생활비</td></tr><tr><td>09/30</td><td>병원 카드매출</td><td>+420,000원</td><td>병원/매출</td></tr><tr><td>09/29</td><td>○○약국</td><td>-180,000원</td><td>병원/의약품</td></tr><tr><td>09/29</td><td>주식 매수</td><td>-520,000원</td><td>투자</td></tr></table></div>`),
+  물품: emptyDashboard("물품","병원 Google Sheets의 구매 데이터를 연결해 관리합니다.",["등록 품목","이번 달 구매","구매 예정","가격 변동"],`<div class="card">${header("구매 품목","Google Sheets 연결 후 표시")}<div class="empty">연결된 구매 데이터가 없습니다.</div></div>`),
 
-  물품: page("물품","병원 Google Sheets의 구매 데이터를 연결해 관리합니다.",[
-    ["등록 품목","128개","Google Sheets"],
-    ["이번 달 구매","428만원","현재 기준"],
-    ["구매 예정","9개","예상 구매일 도래"],
-    ["가격 변동","4개","최근 가격 상승"]
-  ],`<div class="card">${header("구매 품목","Google Sheets 연동 예정")}<table class="table"><tr><th>품목</th><th>최근 구매</th><th>가격</th><th>평균 주기</th><th>예상 구매</th></tr><tr><td>의약품 A</td><td>09/12</td><td>32,000원</td><td>43일</td><td>10/25</td></tr><tr><td>소모품 B</td><td>09/18</td><td>18,500원</td><td>31일</td><td>10/19</td></tr><tr><td>주사기</td><td>09/22</td><td>14,000원</td><td>28일</td><td>10/20</td></tr></table></div>`),
-
-  설정: page("설정","연결·분류·가족·투자 목표 등 앱의 기준을 관리합니다.",[],`
-    <div class="grid-2"><div class="card">${header("금융 연결","은행·카드·투자")}<table class="table"><tr><th>연결</th><th>상태</th><th>최근 동기화</th></tr><tr><td>우체국</td><td><span class="pill">정상</span></td><td>10:18</td></tr><tr><td>카카오뱅크</td><td><span class="pill">정상</span></td><td>10:17</td></tr><tr><td>삼성카드</td><td><span class="pill">정상</span></td><td>10:16</td></tr></table></div><div class="card">${header("자동 분류","거래 분류 규칙")}<div class="list">${notice("가족 구성원","남편 / 나 / 가정","관리")}${notice("병원 사업자","병원 계정·카드 연결","관리")}${notice("투자 목표","목표 자산 배분 설정","관리")}</div></div></div>`)
+  설정: emptyDashboard("설정","연결·분류·가족·투자 목표 등 앱의 기준을 관리합니다.",[],`
+    <div class="grid-2"><div class="card">${header("금융 연결","은행·카드·투자")}
+      <div class="empty">아직 연결된 금융기관이 없습니다.</div></div>
+    <div class="card">${header("가족 구성원","로그인 및 권한")}
+      <div class="empty">가족 구성원을 설정하면 이곳에 표시됩니다.</div></div></div>`)
 };
+
+function emptyDashboard(title,desc,labels,body){
+  const stats = labels.map(label => [label,"—","데이터 없음"]);
+  return page(title,desc,stats,body);
+}
+function emptyPersonPage(title){
+  return emptyDashboard(title,`${title}의 개인 재무 현황입니다.`,["이번 달 수입","이번 달 지출","투자자산","순자산"],`<div class="grid-2"><div class="card">${header("월별 현금흐름","실제 거래 연결 후 표시")}<div class="empty">거래 데이터가 없습니다.</div></div><div class="card">${header("자산 구성","실제 자산 연결 후 표시")}<div class="empty">등록된 자산이 없습니다.</div></div></div>`);
+}
 
 function card(label,value,change){return `<div class="summary-card"><div class="summary-label">${label}</div><div class="summary-value">${value}</div><div class="summary-change">${change}</div></div>`}
 function header(title,sub=""){return `<div class="card-header"><div class="card-title">${title}</div><div class="muted">${sub}</div></div>`}
@@ -311,7 +289,6 @@ function notice(title,desc,value){return `<div class="item"><div><div class="ite
 function allocation(label,value,target){return `<div class="alloc-row"><div class="alloc-head"><span>${label}</span><b>${value}%</b></div><div class="track"><div class="fill" style="width:${value}%"></div></div><div class="target">${target}</div></div>`}
 function barGroup(i,e){return `<div class="month"><div class="bar income" style="height:${i}%"></div><div class="bar expense" style="height:${e}%"></div></div>`}
 function page(title,desc,stats,body){return `<div class="page-intro"><h1>${title}</h1><p>${desc}</p></div>${stats.length?`<div class="summary-grid">${stats.map(x=>card(...x)).join("")}</div>`:""}${body}`}
-function personalPage(title,desc){return page(title,desc,[["이번 달 수입","620만원","현재 기준"],["이번 달 지출","280만원","전월 대비 -3.2%"],["투자자산","1.12억원","현재 평가액"],["순자산","2.36억원","현재 기준"]],`<div class="grid-2"><div class="card">${header("월별 현금흐름","최근 6개월")}<div class="chart"><svg viewBox="0 0 600 180" preserveAspectRatio="none"><polyline points="0,140 100,128 200,120 300,102 400,86 500,70 600,55" fill="none" stroke="#536779" stroke-width="4"/></svg></div></div><div class="card">${header("자산 구성","현재")}<div class="donut-wrap"><div class="donut"></div><div class="legend"><div class="legend-item"><span class="dot"></span>투자 47%</div><div class="legend-item"><span class="dot"></span>예금 28%</div><div class="legend-item"><span class="dot"></span>연금 15%</div><div class="legend-item"><span class="dot"></span>기타 10%</div></div></div></div></div>`)}
 function render(pageName){
   document.getElementById("pageTitle").textContent=pageName;
   document.getElementById("content").innerHTML=data[pageName]||data.전체;
@@ -361,5 +338,35 @@ function changeNetWorthPeriod(period){
 
 render("전체");
 </script>
+
+<script>
+  function updateNestAuthUI(user) {
+    const signedOut = document.getElementById("nestSignedOut");
+    const signedIn = document.getElementById("nestSignedIn");
+    const name = document.getElementById("nestUserName");
+    const email = document.getElementById("nestUserEmail");
+
+    if (!signedOut || !signedIn) return;
+
+    if (user) {
+      signedOut.style.display = "none";
+      signedIn.style.display = "block";
+      if (name) name.textContent = user.displayName || "로그인 사용자";
+      if (email) email.textContent = user.email || "";
+    } else {
+      signedOut.style.display = "block";
+      signedIn.style.display = "none";
+    }
+  }
+
+  window.addEventListener("nest-auth-changed", (event) => {
+    updateNestAuthUI(event.detail);
+  });
+
+  window.addEventListener("error", (event) => {
+    if (event && event.error) console.error("NEST error:", event.error);
+  });
+</script>
+
 </body>
 </html>
