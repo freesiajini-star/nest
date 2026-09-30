@@ -72,7 +72,21 @@ button{font:inherit}
 </style>
 
   <script type="module">
+    import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-functions.js";
+    import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-storage.js";
     import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+    import {
+      getFirestore,
+      doc,
+      setDoc,
+      getDoc,
+      collection,
+      getDocs,
+      addDoc,
+      updateDoc,
+      deleteDoc,
+      serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
     import {
       getAuth,
       GoogleAuthProvider,
@@ -92,9 +106,14 @@ button{font:inherit}
 
     const firebaseApp = initializeApp(firebaseConfig);
     const nestAuth = getAuth(firebaseApp);
+    const nestDb = getFirestore(firebaseApp);
+    const nestStorage = getStorage(firebaseApp);
+    const nestFunctions = getFunctions(firebaseApp, "asia-northeast3");
     const googleProvider = new GoogleAuthProvider();
 
-    window.NEST_AUTH = { nestAuth, googleProvider, signInWithPopup, signOut };
+    window.NEST_AUTH = { nestAuth, nestDb, nestFunctions, nestStorage, googleProvider, signInWithPopup, signOut };
+
+    window.NEST_FIRESTORE = { doc, setDoc, getDoc, collection, getDocs, addDoc, updateDoc, deleteDoc, serverTimestamp };
 
     window.nestLogin = async function () {
       const result = await signInWithPopup(nestAuth, googleProvider);
@@ -105,16 +124,184 @@ button{font:inherit}
       await signOut(nestAuth);
     };
 
-    onAuthStateChanged(nestAuth, (user) => {
+    async function syncNestOwnerProfile(user) {
+      if (!user) return null;
+
+      const ownerRef = doc(nestDb, "nestUsers", user.uid);
+      const snapshot = await getDoc(ownerRef);
+
+      if (!snapshot.exists()) {
+        await setDoc(ownerRef, {
+          uid: user.uid,
+          displayName: user.displayName || "",
+          email: user.email || "",
+          photoURL: user.photoURL || "",
+          role: "owner",
+          accessScope: "family_all",
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+        return "created";
+      }
+
+      await setDoc(ownerRef, {
+        displayName: user.displayName || "",
+        email: user.email || "",
+        photoURL: user.photoURL || "",
+        role: "owner",
+        accessScope: "family_all",
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+
+      return "loaded";
+    }
+
+    const NEST_FAMILY_ID = () => window.NEST_USER ? window.NEST_USER.uid : "";
+
+    const NEST_MEMBER_SEED = [
+      { id: "husband", label: "남편", type: "HUSBAND" },
+      { id: "wife", label: "나", type: "WIFE" },
+      { id: "child1", label: "첫째", type: "CHILD1" },
+      { id: "child2", label: "둘째", type: "CHILD2" },
+      { id: "family", label: "가족 공동", type: "FAMILY" },
+      { id: "clinic", label: "병원", type: "CLINIC" }
+    ];
+
+    async function ensureNestFamily(user) {
+      if (!user) return null;
+
+      const familyRef = doc(nestDb, "nestFamilies", NEST_FAMILY_ID());
+      const familySnap = await getDoc(familyRef);
+
+      if (!familySnap.exists()) {
+        await setDoc(familyRef, {
+          id: NEST_FAMILY_ID(),
+          ownerUid: user.uid,
+          name: "NEST 가족",
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+      } else if (familySnap.data().ownerUid !== user.uid) {
+        throw new Error("이 NEST 가족 데이터의 소유자가 아닙니다.");
+      }
+
+      for (const member of NEST_MEMBER_SEED) {
+        const memberRef = doc(
+          nestDb,
+          "nestFamilies",
+          NEST_FAMILY_ID(),
+          "members",
+          member.id
+        );
+        const memberSnap = await getDoc(memberRef);
+
+        if (!memberSnap.exists()) {
+          await setDoc(memberRef, {
+            id: member.id,
+            label: member.label,
+            type: member.type,
+            active: true,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+        }
+      }
+
+      return familyRef;
+    }
+
+    async function getNestMembers() {
+      const snapshot = await getDocs(
+        collection(nestDb, "nestFamilies", NEST_FAMILY_ID(), "members")
+      );
+      return snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    }
+
+    async function getNestCollection(name) {
+      const snapshot = await getDocs(
+        collection(nestDb, "nestFamilies", NEST_FAMILY_ID(), name)
+      );
+      return snapshot.docs.map(item => ({ id: item.id, ...item.data() }));
+    }
+
+    async function addNestRecord(collectionName, data) {
+      const user = window.NEST_USER;
+      if (!user) throw new Error("로그인이 필요합니다.");
+
+      return addDoc(
+        collection(nestDb, "nestFamilies", NEST_FAMILY_ID(), collectionName),
+        {
+          ...data,
+          createdBy: user.uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        }
+      );
+    }
+
+    async function updateNestRecord(collectionName, id, data) {
+      if (!window.NEST_USER) throw new Error("로그인이 필요합니다.");
+
+      await updateDoc(
+        doc(nestDb, "nestFamilies", NEST_FAMILY_ID(), collectionName, id),
+        {
+          ...data,
+          updatedAt: serverTimestamp()
+        }
+      );
+    }
+
+    async function deleteNestRecord(collectionName, id) {
+      if (!window.NEST_USER) throw new Error("로그인이 필요합니다.");
+
+      await deleteDoc(
+        doc(nestDb, "nestFamilies", NEST_FAMILY_ID(), collectionName, id)
+      );
+    }
+
+    window.NEST_DATA = {
+      familyId: NEST_FAMILY_ID(),
+      getMembers: getNestMembers,
+      getCollection: getNestCollection,
+      add: addNestRecord,
+      update: updateNestRecord,
+      remove: deleteNestRecord
+    };
+
+    onAuthStateChanged(nestAuth, async (user) => {
       window.NEST_USER = user || null;
+
+      if (user) {
+        try {
+          window.NEST_PROFILE_STATUS = await syncNestOwnerProfile(user);
+          await ensureNestFamily(user);
+          window.NEST_DATA_STATUS = "connected";
+        } catch (error) {
+          console.error("NEST Firestore sync failed:", error);
+          window.NEST_PROFILE_STATUS = "error";
+          window.NEST_DATA_STATUS = "error";
+        }
+      } else {
+        window.NEST_PROFILE_STATUS = null;
+        window.NEST_DATA_STATUS = "signed_out";
+      }
+
       window.dispatchEvent(new CustomEvent("nest-auth-changed", {
         detail: user ? {
           uid: user.uid,
           displayName: user.displayName || "",
           email: user.email || "",
-          photoURL: user.photoURL || ""
+          photoURL: user.photoURL || "",
+          role: "owner",
+          accessScope: "family_all"
         } : null
       }));
+
+      if (user) {
+        window.dispatchEvent(new CustomEvent("nest-data-ready", {
+          detail: { familyId: NEST_FAMILY_ID() }
+        }));
+      }
     });
   </script>
 
@@ -208,6 +395,55 @@ button{font:inherit}
 }
 </style>
 
+
+<style id="nest-data-status-style">
+  #nest-data-status{font-size:11px;color:#8b9199;white-space:nowrap}
+</style>
+
+
+<style id="nest-real-data-v6-css">
+.nest-real-panel{margin-top:18px}
+.nest-real-toolbar{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:12px}
+.nest-real-tabs{display:flex;gap:6px;flex-wrap:wrap}
+.nest-real-tabs button,.nest-real-action{border:1px solid #dfe3e8;background:#fff;border-radius:9px;padding:8px 12px;cursor:pointer}
+.nest-real-tabs button.active{background:#20252b;color:#fff;border-color:#20252b}
+.nest-real-table{width:100%;border-collapse:collapse;font-size:13px}
+.nest-real-table th,.nest-real-table td{padding:10px 8px;border-bottom:1px solid #edf0f2;text-align:left}
+.nest-real-table th{font-weight:600;color:#646b73}
+.nest-real-empty{padding:28px;text-align:center;color:#9298a0}
+.nest-real-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-bottom:14px}
+.nest-real-form input,.nest-real-form select{width:100%;box-sizing:border-box;border:1px solid #dfe3e8;border-radius:8px;padding:9px;background:#fff}
+.nest-real-form button{border:0;border-radius:8px;padding:9px 12px;background:#20252b;color:#fff;cursor:pointer}
+.nest-real-status{font-size:12px;color:#777}
+@media(max-width:800px){.nest-real-form{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:520px){.nest-real-form{grid-template-columns:1fr}}
+</style>
+
+<style id="nest-finance-connect-css">
+.nest-finance-connect{margin-top:18px}.nest-finance-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.nest-finance-item{border:1px solid #e6e8eb;border-radius:10px;padding:13px;background:#fff}.nest-finance-name{font-weight:700;font-size:13px}.nest-finance-type{font-size:11px;color:#9298a0;margin-top:3px}.nest-finance-state{font-size:12px;margin-top:10px;color:#777}.nest-finance-btn{margin-top:10px;border:1px solid #dfe3e8;border-radius:8px;background:#fff;padding:8px 10px;cursor:pointer}.nest-finance-btn.primary{background:#20252b;color:#fff;border-color:#20252b}.nest-finance-note{font-size:11px;color:#888;margin-top:10px;line-height:1.5}@media(max-width:900px){.nest-finance-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){.nest-finance-grid{grid-template-columns:1fr}}
+</style>
+<style id="nest-finance-connect-v9-css">
+.nest-finance-connect{margin-top:18px}
+.nest-finance-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.nest-finance-grid select,.nest-finance-grid button{width:100%;box-sizing:border-box;padding:10px;border:1px solid #dfe3e8;border-radius:8px;background:#fff}
+.nest-finance-grid button{background:#20252b;color:#fff;border-color:#20252b;cursor:pointer}
+.nest-finance-note{font-size:12px;color:#777;margin-top:10px;line-height:1.5}
+.nest-finance-result{margin-top:10px;padding:10px;border-radius:8px;background:#f7f8f9;font-size:12px;white-space:pre-wrap}
+@media(max-width:800px){.nest-finance-grid{grid-template-columns:1fr}}
+.mini-data{line-height:1.9;font-size:14px}.mini-data div{padding:3px 0;border-bottom:1px solid #eee}
+</style>
+<meta name="nest-build" content="v14">
+
+<style id="nest-v17-finance-css">
+.nest-finance-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.nest-finance-tools button{border:1px solid #dfe3e8;background:#fff;border-radius:8px;padding:8px 11px;cursor:pointer}
+.nest-finance-tools button.primary{background:#20252b;color:#fff;border-color:#20252b}
+.nest-finance-meta{margin-top:10px;font-size:12px;color:#737981;line-height:1.6;white-space:pre-wrap}
+.nest-review-panel{margin-top:14px;border-top:1px solid #eceff2;padding-top:14px}
+.nest-review-row{display:grid;grid-template-columns:90px 1fr 100px 100px;gap:8px;padding:9px 0;border-bottom:1px solid #eef0f2;font-size:12px;align-items:center}
+.nest-review-row button{border:1px solid #dfe3e8;background:#fff;border-radius:6px;padding:5px 7px;cursor:pointer}
+@media(max-width:700px){.nest-review-row{grid-template-columns:1fr 1fr}.nest-review-row button{width:100%}}
+</style>
 </head>
 <body>
 <div class="app">
@@ -249,7 +485,7 @@ button{font:inherit}
 <main class="main">
   <header class="topbar">
     <div class="page-title" id="pageTitle">전체</div>
-    <div style="display:flex;align-items:center;gap:16px"><div class="update">실제 데이터 연결 전</div>
+    <div style="display:flex;align-items:center;gap:16px"><div class="update">Firebase 연결</div><div id="nest-data-status">로그인 데이터 준비 중</div>
 <div id="nest-auth-topbar">
   <div id="nest-auth-signed-out-top">
     <button class="nest-login-btn" type="button" onclick="window.nestLogin && window.nestLogin()">Google로 로그인</button>
@@ -265,6 +501,57 @@ button{font:inherit}
 </div>
   </header>
   <section class="content" id="content"></section>
+<section id="nest-intelligence-panel" class="card" style="margin-top:16px"><div class="card-header"><div><div class="card-title">NEST 재무 인텔리전스</div><div class="muted">실제 저장 데이터를 기반으로 한 종합 분석</div></div><button id="nest-intelligence-refresh" class="small-button">분석 새로고침</button><button id="nest-advanced-refresh" class="small-button">심층 분석</button></div><div id="nest-intelligence-status" class="empty">로그인 후 분석을 불러옵니다.</div><div id="nest-intelligence-grid" class="grid-2" style="margin-top:12px"></div></section>
+
+<section id="nest-real-data-panel" class="card nest-real-panel">
+  <div class="nest-real-toolbar">
+    <div>
+      <div class="card-title">실제 데이터</div>
+      <div class="nest-real-status" id="nest-real-status">로그인 후 Firestore 데이터가 표시됩니다.</div>
+    </div>
+    <div class="nest-real-tabs">
+      <button class="active" data-real-tab="transactions">거래</button>
+      <button data-real-tab="assets">자산</button>
+      <button data-real-tab="investments">투자</button>
+    </div>
+  </div>
+
+  <div id="nest-real-form-wrap"></div>
+  <div id="nest-real-table-wrap"><div class="nest-real-empty">데이터가 없습니다.</div></div>
+</section>
+
+
+<section class="card nest-finance-connect">
+  <div class="card-title">금융 연결</div>
+  <div class="nest-finance-grid">
+    <select id="nest-finance-provider">
+      <option value="KFTC_OPENBANKING">금융결제원 오픈뱅킹</option>
+      <option value="COOCON">쿠콘 금융데이터</option>
+    </select>
+    <select id="nest-finance-owner">
+      <option value="WIFE">나</option>
+      <option value="HUSBAND">남편</option>
+      <option value="CHILD1">첫째</option>
+      <option value="CHILD2">둘째</option>
+      <option value="FAMILY">가족 공동</option>
+      <option value="CLINIC">병원</option>
+    </select>
+    <button id="nest-finance-start">금융 연결 시작</button><button id="nest-finance-sync" type="button">지금 동기화</button>
+  </div>
+  <div class="nest-finance-note">
+    실제 금융기관 인증은 계약·승인된 금융 API가 연결된 뒤 진행됩니다.
+    금융 API 인증정보는 브라우저에 저장하지 않고 서버 측 보안 저장소에서 처리합니다.
+  </div>
+  <div id="nest-finance-result" class="nest-finance-result">아직 연결된 금융기관이 없습니다.</div><div id="nest-finance-summary" class="card" style="margin-top:12px"></div>
+  <div class="nest-finance-tools">
+    <button type="button" id="nest-finance-history">동기화 이력</button>
+    <button type="button" id="nest-finance-review">확인 필요 거래</button>
+    <button type="button" id="nest-finance-export">거래 CSV 내보내기</button>
+    <button type="button" id="nest-finance-backup">NEST 데이터 백업</button><button type="button" id="nest-finance-csv-import">거래 CSV 가져오기</button><input id="nest-finance-csv-file" type="file" accept=".csv,text/csv" style="display:none">
+  </div>
+  <div id="nest-finance-meta" class="nest-finance-meta"></div>
+  <div id="nest-review-panel" class="nest-review-panel" style="display:none"></div>
+</section>
 </main>
 </div>
 
@@ -333,7 +620,7 @@ const data = {
   병원: emptyDashboard("병원 운영 현황","병원 금융·구매 데이터를 연결하면 실제 현황이 표시됩니다.",["이번 달 매출","이번 달 지출","영업 잔액","물품 구매"],`
     <div class="grid-2"><div class="card">${header("매출·지출 추이","실제 데이터 연결 후 표시")}<div class="empty">병원 거래 데이터가 없습니다.</div></div>
     <div class="card">${header("지출 구성","실제 데이터 연결 후 표시")}<div class="empty">병원 지출 데이터가 없습니다.</div></div></div>
-    <div class="card">${header("구매 예정 물품","Google Sheets 연결 후 표시")}<div class="empty">연결된 구매 데이터가 없습니다.</div></div>`),
+    <div class="card">${header("구매 예정 물품","구매주기 기반 예측")}<div id="nest-inventory-insights" class="empty">구매 데이터가 연결되면 최근 구매일·평균 구매주기·예상 구매일을 계산합니다.</div></div>`),
 
   남편: emptyPersonPage("남편"),
   나: emptyPersonPage("나"),
@@ -353,7 +640,7 @@ const data = {
       <div class="modal-note">실제 계좌를 연결하면 계좌별 보유자산과 평가금액이 자동 집계됩니다.</div>
     </div>`),
 
-  보험: emptyDashboard("보험","보험증권을 업로드하면 실제 계약 내용을 정리합니다.",["월 보험료","남편","나","자녀"],`<div class="card">${header("보험 목록","증권 업로드 후 분석")}<div class="empty">분석된 보험증권이 없습니다.</div></div>`),
+  보험: emptyDashboard("보험","보험증권을 업로드하면 실제 계약 내용을 정리합니다.",["월 보험료","남편","나","자녀"],`<div class="card">${header("보험 목록","증권 업로드 후 분석")}<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px"><input id="nest-insurance-file" type="file" accept="application/pdf,image/*"><select id="nest-insurance-owner"><option value="HUSBAND">남편</option><option value="WIFE">나</option><option value="CHILD1">첫째</option><option value="CHILD2">둘째</option><option value="FAMILY">가족 공동</option></select><button id="nest-insurance-upload" class="small-button">증권 저장</button></div><div id="nest-insurance-status" class="empty">아직 등록된 보험증권이 없습니다.</div><div id="nest-insurance-list" style="margin-top:12px"></div></div>`),
 
   연금: emptyDashboard("연금","공무원연금·연금저축·IRP·개인연금을 통합해서 봅니다.",["예상 월 연금","공무원연금","연금저축","IRP·기타"],`<div class="card">${header("예상 은퇴 후 월 연금","실제 자료 입력 후 계산")}<div class="empty">연금 데이터가 없습니다.</div></div>`),
 
@@ -384,6 +671,86 @@ function notice(title,desc,value){return `<div class="item"><div><div class="ite
 function allocation(label,value,target){return `<div class="alloc-row"><div class="alloc-head"><span>${label}</span><b>${value}%</b></div><div class="track"><div class="fill" style="width:${value}%"></div></div><div class="target">${target}</div></div>`}
 function barGroup(i,e){return `<div class="month"><div class="bar income" style="height:${i}%"></div><div class="bar expense" style="height:${e}%"></div></div>`}
 function page(title,desc,stats,body){return `<div class="page-intro"><h1>${title}</h1><p>${desc}</p></div>${stats.length?`<div class="summary-grid">${stats.map(x=>card(...x)).join("")}</div>`:""}${body}`}
+function formatWon(n){ return Number(n||0).toLocaleString("ko-KR")+"원"; }
+function monthKey(d){ return String(d||"").slice(0,7); }
+function ownerLabel(v){ return ({HUSBAND:"남편",WIFE:"나",CHILD1:"첫째",CHILD2:"둘째",FAMILY:"가족 공동",CLINIC:"병원"})[v]||v||""; }
+function statValue(label, totals, page){
+  const map={
+    "총자산":totals.assets+totals.investments+totals.accountBalances,
+    "순자산":totals.assets+totals.investments+totals.accountBalances-totals.liabilities,
+    "이번 달 수입":totals.monthIncome,
+    "이번 달 지출":totals.monthExpense,
+    "총수입":totals.monthIncome,
+    "총지출":totals.monthExpense,
+    "총자산":totals.assets+totals.investments+totals.accountBalances,
+    "이번 달 매출":totals.clinicIncome,
+    "이번 달 지출":totals.clinicExpense,
+    "영업 잔액":totals.clinicIncome-totals.clinicExpense,
+    "총투자자산":totals.investments,
+    "전체 투자자산":totals.investments,
+    "전체 평가손익":totals.investmentPnl,
+    "위험자산":totals.riskyInvestments,
+    "총부채":totals.liabilities,
+    "전월 순자산":totals.previousNetWorth
+  };
+  return map[label]===undefined?"—":formatWon(map[label]);
+}
+async function loadNestTotals(){
+  if(!window.NEST_DATA||!window.NEST_USER) return null;
+  const [tx,assets,investments,accounts]=await Promise.all([
+    window.NEST_DATA.getCollection("transactions"),
+    window.NEST_DATA.getCollection("assets"),
+    window.NEST_DATA.getCollection("investments"),
+    window.NEST_DATA.getCollection("accounts")
+  ]);
+  const now=new Date(Date.now()+9*60*60*1000), ym=now.toISOString().slice(0,7);
+  const prev=new Date(now.getFullYear(),now.getMonth()-1,1).toISOString().slice(0,7);
+  const month=tx.filter(x=>monthKey(x.date)===ym), prevTx=tx.filter(x=>monthKey(x.date)===prev);
+  const sum=(arr,kind,owner)=>arr.filter(x=>(!kind||x.kind===kind)&&(!owner||x.ownerType===owner)).reduce((a,x)=>a+Number(x.amount||0),0);
+  const clinicIncome=sum(month,"income","CLINIC"), clinicExpense=sum(month,"expense","CLINIC");
+  const risky=investments.filter(x=>/레버|SOXL|TQQQ|QLD|주식|ETF|해외|개별/.test(`${x.category||""} ${x.name||""}`)).reduce((a,x)=>a+Number(x.value||0),0);
+  const accountBalances=accounts.reduce((a,x)=>a+Number(x.balance||0),0);
+  const assetsTotal=assets.reduce((a,x)=>a+Number(x.value||0),0);
+  const investmentsTotal=investments.reduce((a,x)=>a+Number(x.value||0),0);
+  const liabilities=(await window.NEST_DATA.getCollection("liabilities")).reduce((a,x)=>a+Number(x.value||x.amount||0),0);
+  const previousNetWorth=assetsTotal+investmentsTotal+accountBalances-liabilities-sum(prevTx,"expense")+sum(prevTx,"income");
+  return {tx,assets,investments,accounts,assets:assetsTotal,investments:investmentsTotal,accountBalances,liabilities,monthIncome:sum(month,"income"),monthExpense:sum(month,"expense"),clinicIncome,clinicExpense,investmentPnl:investments.reduce((a,x)=>a+Number(x.pnl||0),0),riskyInvestments:risky,previousNetWorth};
+}
+async function hydrateDashboard(pageName){
+  try{
+    const t=await loadNestTotals(); if(!t)return;
+    document.querySelectorAll(".summary-card").forEach(c=>{
+      const label=c.querySelector(".summary-label")?.textContent?.trim();
+      if(!label)return;
+      const v=c.querySelector(".summary-value"); if(v)v.textContent=statValue(label,t,pageName);
+      const ch=c.querySelector(".summary-change"); if(ch)ch.textContent="실제 Firestore 데이터";
+    });
+    const content=document.getElementById("content");
+    if(pageName==="전체"){
+      const cards=content.querySelectorAll(".card");
+      cards.forEach(card=>{
+        const title=card.querySelector(".card-title")?.textContent?.trim()||"";
+        if(title.includes("월별 현금흐름")) card.querySelector(".empty")?.replaceWith(Object.assign(document.createElement("div"),{className:"mini-data",textContent:`이번 달 수입 ${formatWon(t.monthIncome)} · 지출 ${formatWon(t.monthExpense)} · 순현금흐름 ${formatWon(t.monthIncome-t.monthExpense)}`}));
+        if(title==="교육비"){
+          const edu=t.tx.filter(x=>x.kind==="expense"&&x.category==="교육비");
+          const total=edu.reduce((a,x)=>a+Number(x.amount||0),0);
+          card.querySelector(".empty")?.replaceWith(Object.assign(document.createElement("div"),{className:"mini-data",textContent:total?`이번 달 교육비 ${formatWon(total)}`:"교육비 데이터가 없습니다."}));
+        }
+      });
+    }
+    if(pageName==="병원"){
+      const rows=t.tx.filter(x=>x.ownerType==="CLINIC"&&monthKey(x.date)===(new Date(Date.now()+9*60*60*1000)).toISOString().slice(0,7));
+      const groups={}; rows.filter(x=>x.kind==="expense").forEach(x=>groups[x.category||"기타"]=(groups[x.category||"기타"]||0)+Number(x.amount||0));
+      content.querySelectorAll(".card").forEach(card=>{
+        const title=card.querySelector(".card-title")?.textContent?.trim()||"";
+        if(title==="지출 구성"){
+          const e=card.querySelector(".empty"); if(e)e.outerHTML=Object.keys(groups).length?`<div class="mini-data">${Object.entries(groups).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([k,v])=>`<div>${k} · ${formatWon(v)}</div>`).join("")}</div>`:`<div class="empty">병원 지출 데이터가 없습니다.</div>`;
+        }
+      });
+    }
+  }catch(e){ console.warn("NEST dashboard hydration failed",e); }
+}
+
 function render(pageName){
   document.getElementById("pageTitle").textContent=pageName;
   document.getElementById("content").innerHTML=data[pageName]||data.전체;
@@ -401,6 +768,21 @@ function headerWithControl(title, control=""){return `<div class="card-header"><
 
 let assetItems=["투자","예금","부동산","연금","자동차"];
 let educationItems=["학원","예체능","교재","교구·용품","대회·콩쿠르","기타"];
+async function loadCategorySettings(){
+  if(!window.NEST_USER || !window.NEST_DATA) return;
+  try{
+    const a=await window.NEST_DATA.list("settings");
+    const assets=a.find(x=>x.id==="assetCategories");
+    const edu=a.find(x=>x.id==="educationCategories");
+    if(assets?.items?.length) assetItems=assets.items;
+    if(edu?.items?.length) educationItems=edu.items;
+  }catch(e){console.error(e);}
+}
+async function persistCategorySettings(){
+  if(!window.NEST_USER || !window.NEST_DATA) return;
+  await window.NEST_DATA.update("settings","assetCategories",{type:"assetCategories",items:assetItems});
+  await window.NEST_DATA.update("settings","educationCategories",{type:"educationCategories",items:educationItems});
+}
 
 function openAssetManager(){renderAssetRows();document.getElementById("assetModal").classList.add("show")}
 function openEducationManager(){renderEducationRows();document.getElementById("educationModal").classList.add("show")}
@@ -414,21 +796,21 @@ function renderEducationRows(){
 function addAsset(){
   const input=document.getElementById("newAssetName"); const name=input.value.trim();
   if(!name)return; if(assetItems.includes(name)){alert("이미 있는 항목입니다.");return}
-  assetItems.push(name);input.value="";renderAssetRows();
+  assetItems.push(name);input.value="";renderAssetRows();persistCategorySettings().catch(console.error);
 }
-function deleteAsset(i){if(confirm(`"${assetItems[i]}" 항목을 삭제할까요?`)){assetItems.splice(i,1);renderAssetRows()}}
-function renameAsset(i){const n=prompt("항목 이름",assetItems[i]);if(n&&n.trim()){assetItems[i]=n.trim();renderAssetRows()}}
+function deleteAsset(i){if(confirm(`"${assetItems[i]}" 항목을 삭제할까요?`)){assetItems.splice(i,1);renderAssetRows();persistCategorySettings().catch(console.error)}}
+function renameAsset(i){const n=prompt("항목 이름",assetItems[i]);if(n&&n.trim()){assetItems[i]=n.trim();renderAssetRows();persistCategorySettings().catch(console.error)}}
 function addEducation(){
   const input=document.getElementById("newEducationName"); const name=input.value.trim();
   if(!name)return; if(educationItems.includes(name)){alert("이미 있는 항목입니다.");return}
-  educationItems.push(name);input.value="";renderEducationRows();
+  educationItems.push(name);input.value="";renderEducationRows();persistCategorySettings().catch(console.error);
 }
-function deleteEducation(i){if(confirm(`"${educationItems[i]}" 항목을 삭제할까요?`)){educationItems.splice(i,1);renderEducationRows()}}
-function renameEducation(i){const n=prompt("항목 이름",educationItems[i]);if(n&&n.trim()){educationItems[i]=n.trim();renderEducationRows()}}
+function deleteEducation(i){if(confirm(`"${educationItems[i]}" 항목을 삭제할까요?`)){educationItems.splice(i,1);renderEducationRows();persistCategorySettings().catch(console.error)}}
+function renameEducation(i){const n=prompt("항목 이름",educationItems[i]);if(n&&n.trim()){educationItems[i]=n.trim();renderEducationRows();persistCategorySettings().catch(console.error)}}
 function changeNetWorthPeriod(period){
   const labels={3:["7월","8월","9월"],6:["4월","5월","6월","7월","8월","9월"],9:["1월","2월","3월","4월","5월","6월","7월","8월","9월"],12:["2025.10","2025.11","2025.12","2026.01","2026.02","2026.03","2026.04","2026.05","2026.06","2026.07","2026.08","2026.09"],36:["2024","2025","2026"],60:["2022","2023","2024","2025","2026"],120:["2017","2019","2021","2023","2025","2026"],all:["전체 기간"]};
   const text=labels[period]||labels[9];
-  alert(`${period==="all"?"전체 기간":period+"개월"} 데이터로 그래프가 전환됩니다.\n\n현재는 테스트 화면이며, Firebase 연결 후 실제 월별 데이터가 표시됩니다.`);
+  window.nestRefreshRealData && window.nestRefreshRealData();
 }
 
 render("전체");
@@ -463,5 +845,1033 @@ render("전체");
 })();
 </script>
 
+
+<script>
+window.addEventListener("nest-auth-changed", function(e){
+  const el = document.getElementById("nest-data-status");
+  if(!el) return;
+  if(!e.detail){
+    el.textContent = "로그인 필요";
+    return;
+  }
+  el.textContent = window.NEST_DATA_STATUS === "connected"
+    ? "Firebase 데이터 연결됨"
+    : "데이터 연결 중";
+});
+</script>
+
+<script>
+window.addEventListener("nest-data-ready", function(){
+  const el = document.getElementById("nest-data-status");
+  if(el) el.textContent = "Firebase 데이터 연결됨";
+});
+</script>
+
+<script id="nest-firestore-runtime">
+(function(){
+  function fs(){
+    if(!window.NEST_FIRESTORE || !window.NEST_AUTH?.nestDb) throw new Error("Firestore가 준비되지 않았습니다.");
+    if(!window.NEST_USER) throw new Error("Google 로그인이 필요합니다.");
+    return window.NEST_FIRESTORE;
+  }
+  function family(){ return window.NEST_USER.uid; }
+  function ref(col,id){ const f=fs(); return f.doc(window.NEST_AUTH.nestDb,"nestFamilies",family(),col,id); }
+  async function list(col){ const f=fs(); const q=f.collection(window.NEST_AUTH.nestDb,"nestFamilies",family(),col); const snap=await f.getDocs(q); return snap.docs.map(d=>({id:d.id,...d.data()})); }
+  async function add(col,data){ const f=fs(); const q=f.collection(window.NEST_AUTH.nestDb,"nestFamilies",family(),col); const r=f.doc(q); await f.setDoc(r,{...data,id:r.id,ownerUid:window.NEST_USER.uid,createdAt:f.serverTimestamp(),updatedAt:f.serverTimestamp()}); return r.id; }
+  async function update(col,id,data){ const f=fs(); await f.setDoc(ref(col,id),{...data,ownerUid:window.NEST_USER.uid,updatedAt:f.serverTimestamp()},{merge:true}); }
+  async function remove(col,id){ const f=fs(); await f.deleteDoc(ref(col,id)); }
+  async function get(col,id){ const f=fs(); const x=await f.getDoc(ref(col,id)); return x.exists()?{id:x.id,...x.data()}:null; }
+  window.NEST_DATA={familyId:family,list,add,update,remove,get,ownerTypes:["HUSBAND","WIFE","CHILD1","CHILD2","FAMILY","CLINIC"]};
+})();
+</script>
+
+
+
+
+
+
+\n<script id="nest-real-data-layer">
+(function(){
+  const OWNER_LABEL={HUSBAND:"남편",WIFE:"나",CHILD1:"첫째",CHILD2:"둘째",FAMILY:"가족 공동",CLINIC:"병원"};
+  function won(n){ return Math.round(Number(n)||0).toLocaleString("ko-KR")+"원"; }
+  function monthKey(d){ const x=new Date(d); return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}`; }
+  function val(x){ return x && typeof x.toDate==="function" ? x.toDate() : new Date(x); }
+  async function load(){
+    if(!window.NEST_USER || !window.NEST_DATA) return;
+    const [tx,assets,investments]=await Promise.all([window.NEST_DATA.list("transactions"),window.NEST_DATA.list("assets"),window.NEST_DATA.list("investments")]);
+    window.NEST_REAL={tx,assets,investments};
+    refreshDashboard(tx,assets,investments);
+  }
+  function refreshDashboard(tx,assets,investments){
+    if(!document.getElementById("content") || document.getElementById("pageTitle")?.textContent!=="전체") return;
+    const now=new Date(), ym=monthKey(now);
+    const cur=tx.filter(x=>monthKey(val(x.date||x.createdAt||now))===ym);
+    const income=cur.filter(x=>x.kind==="income").reduce((a,x)=>a+(Number(x.amount)||0),0);
+    const expense=cur.filter(x=>x.kind==="expense").reduce((a,x)=>a+(Number(x.amount)||0),0);
+    const netAssets=assets.reduce((a,x)=>a+(Number(x.value)||0),0)+investments.reduce((a,x)=>a+(Number(x.value)||0),0);
+    const cards=[...document.querySelectorAll(".summary-card")];
+    const map={"이번 달 수입":won(income),"이번 달 지출":won(expense),"순자산":won(netAssets)};
+    cards.forEach(c=>{const l=c.querySelector(".summary-label")?.textContent;if(map[l]){const v=c.querySelector(".summary-value");if(v)v.textContent=map[l];const ch=c.querySelector(".summary-change");if(ch)ch.textContent="Firestore 실제 데이터";}});
+    const cash=[...document.querySelectorAll(".card")].find(c=>c.querySelector(".card-title")?.textContent==="월별 현금흐름");
+    if(cash){const e=cash.querySelector(".empty");if(e)e.innerHTML=`이번 달 수입 ${won(income)} · 지출 ${won(expense)} · 순현금흐름 ${won(income-expense)}`;}
+  }
+  async function addTransaction(){
+    const amount=Number(document.getElementById("nestTxAmount")?.value); const kind=document.getElementById("nestTxKind")?.value; const owner=document.getElementById("nestTxOwner")?.value; const category=document.getElementById("nestTxCategory")?.value.trim()||"기타"; const date=document.getElementById("nestTxDate")?.value;
+    if(!amount||amount<0||!date){alert("금액과 날짜를 입력하세요.");return;}
+    await window.NEST_DATA.add("transactions",{amount,kind,ownerType:owner,category,date,source:"manual",dataSource:"manual"});
+    await load();
+    alert("Firestore에 저장되었습니다.");
+  }
+  async function addAsset(){
+    const value=Number(document.getElementById("nestAssetValue")?.value); const owner=document.getElementById("nestAssetOwner")?.value; const category=document.getElementById("nestAssetCategory")?.value.trim()||"기타"; const name=document.getElementById("nestAssetName")?.value.trim()||category;
+    if(!value||value<0){alert("자산 금액을 입력하세요.");return;}
+    await window.NEST_DATA.add("assets",{name,category,ownerType:owner,value,source:"manual"});
+    await load(); alert("Firestore에 저장되었습니다.");
+  }
+  function openDataEntry(){
+    let m=document.getElementById("nestDataEntry"); if(!m){m=document.createElement("div");m.id="nestDataEntry";m.className="modal-backdrop";m.innerHTML=`<div class="modal" style="max-width:620px"><div class="modal-head"><div class="modal-title">실제 데이터 입력</div><button class="close-button" onclick="document.getElementById('nestDataEntry').classList.remove('show')">×</button></div><div class="grid-2"><div class="card"><div class="card-title">거래 저장</div><select id="nestTxKind"><option value="income">수입</option><option value="expense">지출</option></select><select id="nestTxOwner"><option value="HUSBAND">남편</option><option value="WIFE">나</option><option value="CHILD1">첫째</option><option value="CHILD2">둘째</option><option value="FAMILY">가족 공동</option><option value="CLINIC">병원</option></select><input id="nestTxAmount" type="number" placeholder="금액"><input id="nestTxCategory" placeholder="분류"><input id="nestTxDate" type="date"><button class="manage-button" onclick="nestAddTransaction()">거래 저장</button></div><div class="card"><div class="card-title">자산 저장</div><input id="nestAssetName" placeholder="자산명"><input id="nestAssetCategory" placeholder="자산 항목"><select id="nestAssetOwner"><option value="HUSBAND">남편</option><option value="WIFE">나</option><option value="CHILD1">첫째</option><option value="CHILD2">둘째</option><option value="FAMILY">가족 공동</option></select><input id="nestAssetValue" type="number" placeholder="평가금액"><button class="manage-button" onclick="nestAddAsset()">자산 저장</button></div></div></div>`;document.body.appendChild(m);}
+    m.classList.add("show");
+    const d=document.getElementById("nestTxDate"); if(d&&!d.value)d.value=new Date().toISOString().slice(0,10);
+  }
+  window.nestAddTransaction=addTransaction; window.nestAddAsset=addAsset; window.nestOpenDataEntry=openDataEntry; window.nestRefreshRealData=load;
+  window.addEventListener("nest-data-ready",()=>{load().catch(e=>console.error("실제 데이터 로드 실패",e));loadCategorySettings().catch(e=>console.error(e));});
+  window.addEventListener("nest-auth-changed",e=>{if(e.detail) setTimeout(()=>load().catch(console.error),50);});
+  document.addEventListener("click",async e=>{
+    const b=e.target.closest("button[data-tx][data-category]"); if(!b)return;
+    try{const f=fn("updateFinanceTransactionClassification"); await f({id:b.dataset.tx,category:b.dataset.category}); await review(); if(window.NEST_V16?.hydrate)await window.NEST_V16.hydrate();}
+    catch(err){alert(err.message||"분류 저장에 실패했습니다.");}
+  });
+  document.addEventListener("DOMContentLoaded",()=>{const top=document.querySelector(".topbar > div:last-child");if(top&&!document.getElementById("nest-data-entry-btn")){const b=document.createElement("button");b.id="nest-data-entry-btn";b.className="nest-login-btn";b.textContent="데이터 입력";b.onclick=window.nestOpenDataEntry;top.prepend(b);}});
+})();
+</script>\n
+<script id="nest-firestore-self-test">
+window.NEST_FIRESTORE_SELF_TEST = async function(){
+  if(!window.NEST_DATA || !window.NEST_USER) throw new Error("Google 로그인이 필요합니다.");
+  const id=await window.NEST_DATA.add("_connectionTest",{type:"firestore_connection_probe",createdAtClient:new Date().toISOString()});
+  const readBack=await window.NEST_DATA.get("_connectionTest",id);
+  if(!readBack || readBack.id!==id) throw new Error("Firestore 읽기 검증 실패");
+  await window.NEST_DATA.remove("_connectionTest",id);
+  return {write:true,read:true,delete:true};
+};
+</script>
+
+<script id="nest-real-data-v6-controller">
+(function(){
+  const ownerOptions = `
+    <option value="HUSBAND">남편</option>
+    <option value="WIFE">나</option>
+    <option value="CHILD1">첫째</option>
+    <option value="CHILD2">둘째</option>
+    <option value="FAMILY">가족 공동</option>
+    <option value="CLINIC">병원</option>`;
+  let currentTab = "transactions";
+
+  function money(n){ return Number(n||0).toLocaleString("ko-KR")+"원"; }
+  function esc(v){ return String(v??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m])); }
+
+  function form(){
+    const wrap=document.getElementById("nest-real-form-wrap");
+    if(!wrap) return;
+    if(currentTab==="transactions"){
+      wrap.innerHTML=`<div class="nest-real-form">
+        <select id="rd-kind"><option value="income">수입</option><option value="expense">지출</option></select>
+        <select id="rd-owner">${ownerOptions}</select>
+        <select id="rd-category">
+      <option value="식비">식비</option><option value="주거">주거</option>
+      <option value="교통">교통</option><option value="교육비">교육비</option>
+      <option value="의료">의료</option><option value="생활">생활</option>
+      <option value="인건비">인건비</option><option value="소모품비">소모품비</option>
+      <option value="월세">월세</option><option value="의료기기 구입">의료기기 구입</option>
+      <option value="유지보수비">유지보수비</option><option value="기장료">기장료</option>
+      <option value="카드값">카드값</option><option value="기타">기타</option>
+    </select>
+        <input id="rd-amount" type="number" min="0" placeholder="금액">
+        <input id="rd-date" type="date">
+        <input id="rd-memo" placeholder="메모">
+        <button onclick="window.NEST_V6.saveTransaction()">거래 저장</button>
+      </div>`;
+      document.getElementById("rd-date").value=new Date().toISOString().slice(0,10);
+    }else if(currentTab==="assets"){
+      wrap.innerHTML=`<div class="nest-real-form">
+        <input id="rd-name" placeholder="자산명">
+        <input id="rd-category" placeholder="자산 항목">
+        <select id="rd-owner">${ownerOptions.replace('<option value="CLINIC">병원</option>','')}</select>
+        <input id="rd-value" type="number" min="0" placeholder="평가금액">
+        <button onclick="window.NEST_V6.saveAsset()">자산 저장</button>
+      </div>`;
+    }else{
+      wrap.innerHTML=`<div class="nest-real-form">
+        <input id="rd-name" placeholder="투자상품명">
+        <input id="rd-category" placeholder="종류 / 계좌">
+        <select id="rd-owner">${ownerOptions}</select>
+        <input id="rd-value" type="number" min="0" placeholder="평가금액">
+        <input id="rd-pnl" type="number" placeholder="평가손익">
+        <button onclick="window.NEST_V6.saveInvestment()">투자 저장</button>
+      </div>`;
+    }
+    window.dispatchEvent(new Event("nest-real-form-rendered"));
+  }
+
+  async function rows(){
+    const wrap=document.getElementById("nest-real-table-wrap");
+    const status=document.getElementById("nest-real-status");
+    if(!wrap) return;
+    if(!window.NEST_USER || !window.NEST_DATA){
+      wrap.innerHTML='<div class="nest-real-empty">Google 로그인 후 실제 데이터가 표시됩니다.</div>';
+      return;
+    }
+    try{
+      const data=await window.NEST_DATA.getCollection(currentTab);
+      status.textContent=`Firestore 연결됨 · ${data.length}건`;
+      if(!data.length){ wrap.innerHTML='<div class="nest-real-empty">저장된 데이터가 없습니다.</div>'; return; }
+
+      const head=currentTab==="transactions"
+        ? "<tr><th>날짜</th><th>구분</th><th>소유자</th><th>분류</th><th>금액</th><th>메모</th><th></th></tr>"
+        : currentTab==="assets"
+        ? "<tr><th>자산명</th><th>항목</th><th>소유자</th><th>평가금액</th><th></th></tr>"
+        : "<tr><th>상품</th><th>종류/계좌</th><th>소유자</th><th>평가금액</th><th>평가손익</th><th></th></tr>";
+
+      const body=data.map(x=>{
+        if(currentTab==="transactions")
+          return `<tr><td>${esc(x.date)}</td><td>${x.kind==="income"?"수입":"지출"}</td><td>${esc(ownerName(x.ownerType))}</td><td>${esc(x.category)}</td><td>${money(x.amount)}</td><td>${esc(x.memo)}</td><td><button class="nest-real-action" onclick="window.NEST_V6.remove('transactions','${esc(x.id)}')">삭제</button></td></tr>`;
+        if(currentTab==="assets")
+          return `<tr><td>${esc(x.name)}</td><td>${esc(x.category)}</td><td>${esc(ownerName(x.ownerType))}</td><td>${money(x.value)}</td><td><button class="nest-real-action" onclick="window.NEST_V6.remove('assets','${esc(x.id)}')">삭제</button></td></tr>`;
+        return `<tr><td>${esc(x.name)}</td><td>${esc(x.category)}</td><td>${esc(ownerName(x.ownerType))}</td><td>${money(x.value)}</td><td>${money(x.pnl)}</td><td><button class="nest-real-action" onclick="window.NEST_V6.remove('investments','${esc(x.id)}')">삭제</button></td></tr>`;
+      }).join("");
+      wrap.innerHTML=`<table class="nest-real-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    }catch(e){
+      status.textContent="Firestore 오류";
+      wrap.innerHTML=`<div class="nest-real-empty">${esc(e.message)}</div>`;
+    }
+  }
+
+  function ownerName(v){return ({HUSBAND:"남편",WIFE:"나",CHILD1:"첫째",CHILD2:"둘째",FAMILY:"가족 공동",CLINIC:"병원"})[v]||v||"";}
+
+  async function saveTransaction(){
+    const amount=Number(document.getElementById("rd-amount").value);
+    if(!amount){alert("금액을 입력하세요.");return;}
+    await window.NEST_DATA.add("transactions",{
+      kind:document.getElementById("rd-kind").value,
+      ownerType:document.getElementById("rd-owner").value,
+      category:document.getElementById("rd-category").value.trim()||"기타",
+      amount,date:document.getElementById("rd-date").value,
+      memo:document.getElementById("rd-memo").value.trim(),
+      source:"manual",dataSource:"manual"
+    });
+    await rows(); if(window.NEST_REFRESH_AGGREGATION)await window.NEST_REFRESH_AGGREGATION();
+  }
+
+  async function saveAsset(){
+    const value=Number(document.getElementById("rd-value").value);
+    if(!value){alert("평가금액을 입력하세요.");return;}
+    await window.NEST_DATA.add("assets",{
+      name:document.getElementById("rd-name").value.trim()||"자산",
+      category:document.getElementById("rd-category").value.trim()||"기타",
+      ownerType:document.getElementById("rd-owner").value,
+      value,source:"manual",dataSource:"manual"
+    });
+    await rows(); if(window.NEST_REFRESH_AGGREGATION)await window.NEST_REFRESH_AGGREGATION();
+  }
+
+  async function saveInvestment(){
+    const value=Number(document.getElementById("rd-value").value);
+    if(!value){alert("평가금액을 입력하세요.");return;}
+    await window.NEST_DATA.add("investments",{
+      name:document.getElementById("rd-name").value.trim()||"투자",
+      category:document.getElementById("rd-category").value.trim()||"기타",
+      ownerType:document.getElementById("rd-owner").value,
+      value,pnl:Number(document.getElementById("rd-pnl").value)||0,source:"manual",dataSource:"manual"
+    });
+    await rows(); if(window.NEST_REFRESH_AGGREGATION)await window.NEST_REFRESH_AGGREGATION();
+  }
+
+  async function remove(collection,id){
+    await window.NEST_DATA.remove(collection,id);
+    await rows();
+    if(window.NEST_REFRESH_AGGREGATION)await window.NEST_REFRESH_AGGREGATION();
+  }
+
+  function activate(tab){
+    currentTab=tab;
+    document.querySelectorAll("[data-real-tab]").forEach(b=>b.classList.toggle("active",b.dataset.realTab===tab));
+    form(); rows();
+  }
+
+  window.NEST_V6={activate,saveTransaction,saveAsset,saveInvestment,remove,refresh:rows};
+  document.addEventListener("click",e=>{
+    const b=e.target.closest("[data-real-tab]");
+    if(b) activate(b.dataset.realTab);
+  });
+  window.addEventListener("nest-auth-changed",()=>setTimeout(()=>{form();rows()},100));
+  document.addEventListener("DOMContentLoaded",()=>{form();rows()});
+})();
+</script>
+
+
+<script id="nest-category-owner-sync">
+(function(){
+  const categoryMap={
+    CLINIC:["청구","카드","현금","장애지원금","접종비","인건비","소모품비","월세","식비","의료기기 구입","유지보수비","기장료","카드값","기타"],
+    DEFAULT:["식비","주거","교통","교육비","의료","생활","기타"]
+  };
+  function sync(){
+    const owner=document.getElementById("rd-owner"), cat=document.getElementById("rd-category");
+    if(!owner||!cat)return;
+    const vals=categoryMap[owner.value]||categoryMap.DEFAULT;
+    const old=cat.value;
+    cat.innerHTML=vals.map(v=>`<option value="${v}">${v}</option>`).join("");
+    if(vals.includes(old))cat.value=old;
+  }
+  document.addEventListener("change",e=>{if(e.target.id==="rd-owner")sync();});
+  window.addEventListener("nest-real-form-rendered",sync);
+})();
+</script>
+
+<script id="nest-real-aggregation">
+(function(){
+  window.NEST_REFRESH_AGGREGATION=async function(){
+    if(window.NEST_V16?.hydrate) return window.NEST_V16.hydrate();
+  };
+})();
+</script>
+<script id="nest-finance-connect-v11">
+(function(){
+  const $=id=>document.getElementById(id);
+  const fn=name=>httpsCallable(window.NEST_AUTH.nestFunctions,name);
+  function show(msg){const e=$("nest-finance-result");if(e)e.textContent=msg;}
+  async function status(){
+    if(!window.NEST_USER||!window.NEST_AUTH?.nestFunctions){show("Google 로그인 후 금융 연결을 사용할 수 있습니다.");return;}
+    try{
+      const r=await fn("getFinanceConnectionStatus")({});
+      const c=r.data?.connections||[],p=r.data?.providers||{};
+      const lines=[`금융결제원 오픈뱅킹 서버 설정: ${p.KFTC_OPENBANKING?"완료":"미설정"}`,`쿠콘 서버 설정: ${p.COOCON?"완료":"미설정"}`,`등록된 금융 연결: ${c.length}건`];
+      if(c.length)lines.push(...c.map(x=>`${x.ownerType} · ${x.provider} · ${x.status}${x.status==="connected"?` · [연결 해제 ID ${x.id}]`:""}`));
+      show(lines.join("\n"));
+    }catch(e){show(e.message||"금융 연결 상태를 불러오지 못했습니다.");}
+  }
+  async function start(){
+    if(!window.NEST_USER){show("먼저 Google 로그인을 해주세요.");return;}
+    try{
+      const r=await fn("beginFinanceConnection")({provider:$("nest-finance-provider").value,ownerType:$("nest-finance-owner").value});
+      const d=r.data||{};
+      if(d.status==="provider_not_configured"){show("아직 금융 API 이용계약/인증정보가 서버에 설정되지 않았습니다.");return;}
+      if(d.authorizationUrl){sessionStorage.setItem("nest_finance_connection_id",d.connectionId||"");window.location.href=d.authorizationUrl;return;}
+      show("금융 연결 주소를 받지 못했습니다.");
+    }catch(e){show(e.message||"금융 연결을 시작할 수 없습니다.");}
+  }
+  async function disconnect(id){
+    try{const f=fn("disconnectFinanceConnection"); if(!f)return; await f({connectionId:id}); show("금융 연결을 해제했습니다."); await status();}
+    catch(e){show(e.message||"금융 연결 해제에 실패했습니다.");}
+  }
+  async function sync(){
+    if(!window.NEST_USER){show("먼저 Google 로그인을 해주세요.");return;}
+    try{
+      const r=await fn("getFinanceConnectionStatus")({});
+      const c=(r.data?.connections||[]).filter(x=>x.status==="connected");
+      if(!c.length){show("연결된 금융기관이 없습니다.");return;}
+      let total=0;
+      for(const x of c){
+        const z=await fn("syncFinanceData")({connectionId:x.id});
+        total+=Number(z.data?.imported||0);
+      }
+      show(`금융 데이터 동기화 완료
+가져온 거래: ${total.toLocaleString("ko-KR")}건`);
+      if(window.NEST_REFRESH_AGGREGATION) await window.NEST_REFRESH_AGGREGATION();
+    }catch(e){show(e.message||"금융 데이터 동기화에 실패했습니다.");}
+  }
+
+  async function callback(){
+    const q=new URLSearchParams(location.search),code=q.get("code"),state=q.get("state"),error=q.get("error");
+    if(!code&&!error)return;
+    if(error){show("금융기관 인증이 취소되었거나 실패했습니다.");history.replaceState({},document.title,location.pathname+location.hash);return;}
+    try{
+      show("금융기관 인증 결과를 확인하는 중입니다.");
+      const r=await fn("completeKftcAuthorization")({code,state});
+      sessionStorage.removeItem("nest_finance_connection_id");
+      history.replaceState({},document.title,location.pathname+location.hash);
+      show(r.data?.status==="connected"?"금융 계좌 연결이 완료되었습니다.":"금융 연결 결과를 확인해주세요.");
+      await status();
+    }catch(e){show(e.message||"금융기관 인증 완료 처리에 실패했습니다.");history.replaceState({},document.title,location.pathname+location.hash);}
+  }
+  document.addEventListener("DOMContentLoaded",()=>{$("nest-finance-start")?.addEventListener("click",start);
+    $("nest-finance-sync")?.addEventListener("click",sync);setTimeout(()=>{callback().finally(status);},300);});
+  window.addEventListener("nest-auth-changed",()=>setTimeout(()=>{callback();status();},300));
+})();
+</script>
+
+
+<script id="nest-v16-live-finance">
+(function(){
+  const $=id=>document.getElementById(id);
+  const won=n=>Number(n||0).toLocaleString("ko-KR")+"원";
+  const owner=v=>({HUSBAND:"남편",WIFE:"나",CHILD1:"첫째",CHILD2:"둘째",FAMILY:"가족 공동",CLINIC:"병원"}[v]||v||"");
+  const monthKey=v=>String(v||"").slice(0,7);
+  const esc=v=>String(v??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+  async function data(){
+    if(!window.NEST_USER||!window.NEST_DATA) return null;
+    const [tx,assets,investments,accounts,liabilities,snapshots]=await Promise.all([
+      window.NEST_DATA.getCollection("transactions"),window.NEST_DATA.getCollection("assets"),
+      window.NEST_DATA.getCollection("investments"),window.NEST_DATA.getCollection("accounts"),
+      window.NEST_DATA.getCollection("liabilities"),window.NEST_DATA.getCollection("dashboardSnapshots")
+    ]);
+    return {tx,assets,investments,accounts,liabilities,snapshots};
+  }
+  function totals(d){
+    const assets=d.assets.reduce((n,x)=>n+Number(x.value||0),0);
+    const investments=d.investments.reduce((n,x)=>n+Number(x.value||0),0);
+    const accounts=d.accounts.reduce((n,x)=>n+Number(x.balance||0),0);
+    const liabilities=d.liabilities.reduce((n,x)=>n+Number(x.value||x.amount||0),0);
+    const now=new Date(Date.now()+9*60*60*1000), ym=now.toISOString().slice(0,7);
+    const cur=d.tx.filter(x=>monthKey(x.date)===ym && !x.isInternalTransfer);
+    return {assets,investments,accounts,liabilities,netWorth:assets+investments+accounts-liabilities,
+      income:cur.filter(x=>x.kind==="income").reduce((n,x)=>n+Number(x.amount||0),0),
+      expense:cur.filter(x=>x.kind==="expense").reduce((n,x)=>n+Number(x.amount||0),0),
+      clinicIncome:cur.filter(x=>x.ownerType==="CLINIC"&&x.kind==="income").reduce((n,x)=>n+Number(x.amount||0),0),
+      clinicExpense:cur.filter(x=>x.ownerType==="CLINIC"&&x.kind==="expense").reduce((n,x)=>n+Number(x.amount||0),0),
+      review:d.tx.filter(x=>x.classificationStatus==="needs_review").length,
+      risky:d.investments.filter(x=>x.riskType==="risky" || (x.riskType!=="safe" && /레버|SOXL|TQQQ|QLD|주식|ETF|해외|개별/.test(`${x.category||""} ${x.name||""}`))).reduce((n,x)=>n+Number(x.value||0),0)};
+  }
+  function setStat(label,value){document.querySelectorAll(".summary-card").forEach(c=>{if(c.querySelector(".summary-label")?.textContent?.trim()===label){const v=c.querySelector(".summary-value");if(v)v.textContent=value;const ch=c.querySelector(".summary-change");if(ch)ch.textContent="실제 Firestore 데이터";}})}
+  function replaceEmpty(title,html){document.querySelectorAll(".card").forEach(c=>{if(c.querySelector(".card-title")?.textContent?.trim()===title){const e=c.querySelector(".empty,.mini-data");if(e)e.outerHTML=html;}})}
+  function txRows(tx, limit=10){return tx.slice().sort((a,b)=>String(b.date||"").localeCompare(String(a.date||""))).slice(0,limit).map(x=>`<tr><td>${esc(String(x.date||"").replace("T"," ").slice(0,16))}</td><td>${esc(owner(x.ownerType))}</td><td>${x.kind==="income"?"수입":"지출"}</td><td>${esc(x.category||"기타")}</td><td>${won(x.amount)}</td><td>${x.classificationStatus==="needs_review"?'<span class="pill">확인 필요</span>':'<span class="pill">자동</span>'}</td></tr>`).join("")||'<tr><td colspan="6" style="text-align:center;color:#999">거래 데이터가 없습니다.</td></tr>';}
+  async function hydrate(){
+    const d=await data(); if(!d)return; const t=totals(d); const page=$('pageTitle')?.textContent||"전체";
+    setStat("총자산",won(t.assets+t.investments+t.accounts));setStat("순자산",won(t.netWorth));
+    setStat("이번 달 수입",won(t.income));setStat("이번 달 지출",won(t.expense));
+    setStat("총수입",won(t.income));setStat("총지출",won(t.expense));
+    setStat("이번 달 매출",won(t.clinicIncome));setStat("이번 달 지출",won(page==="병원"?t.clinicExpense:t.expense));
+    setStat("영업 잔액",won(t.clinicIncome-t.clinicExpense));setStat("총투자자산",won(t.investments));setStat("전체 투자자산",won(t.investments));setStat("전체 평가손익",won(d.investments.reduce((n,x)=>n+Number(x.pnl||0),0)));setStat("위험자산",won(t.risky));setStat("총부채",won(t.liabilities));
+
+    if(page==="전체"){
+      // 정적인 목업 차트는 실제 거래/스냅샷이 있을 때만 그립니다.
+      const chartCard=[...document.querySelectorAll(".card")].find(c=>c.querySelector(".card-title")?.textContent?.trim()==="순자산 추이");
+      if(chartCard){
+        const months=d.snapshots.slice().sort((a,b)=>String(a.month).localeCompare(String(b.month))).slice(-9);
+        const e=chartCard.querySelector(".chart");
+        if(e)e.outerHTML=months.length?`<div class="mini-data" style="display:grid;grid-template-columns:repeat(${months.length},1fr);gap:8px;align-items:end;min-height:210px">${months.map(x=>`<div style="text-align:center"><div style="height:150px;display:flex;align-items:end;justify-content:center"><div style="width:22px;height:${Math.max(4,Math.round((Number(x.netWorth||0)/Math.max(...months.map(m=>Number(m.netWorth||0)),1))*150))}px;background:#536779;border-radius:5px 5px 0 0"></div></div><div style="font-size:10px;color:#8b9199;margin-top:7px">${esc(x.month)}</div></div>`).join("")}</div>`:`<div class="empty">월별 순자산 스냅샷이 아직 없습니다. 실제 금융 데이터가 동기화되면 표시됩니다.</div>`;
+      }
+      const donutCard=[...document.querySelectorAll(".card")].find(c=>c.querySelector(".card-title")?.textContent?.trim()==="자산 구성");
+      if(donutCard){
+        const parts=[["계좌",t.accounts],["투자",t.investments],["기타 자산",t.assets]].filter(x=>x[1]>0);
+        const e=donutCard.querySelector(".donut-wrap,.empty");
+        if(e)e.outerHTML=parts.length?`<div class="mini-data">${parts.map(x=>`<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #eef0f2"><span>${esc(x[0])}</span><strong>${won(x[1])}</strong></div>`).join("")}</div>`:`<div class="empty">실제 자산 데이터가 연결되면 구성 비율을 표시합니다.</div>`;
+      }
+      replaceEmpty("월별 현금흐름",`<div class="mini-data">이번 달 수입 ${won(t.income)} · 지출 ${won(t.expense)} · 순현금흐름 ${won(t.income-t.expense)}</div>`);
+      const edu=d.tx.filter(x=>x.kind==="expense"&&x.category==="교육비");
+      replaceEmpty("교육비",`<div class="mini-data">이번 달 교육비 ${won(edu.filter(x=>monthKey(x.date)===(new Date(Date.now()+9*60*60*1000)).toISOString().slice(0,7)).reduce((n,x)=>n+Number(x.amount||0),0))}</div>`);
+      replaceEmpty("이번 달 주요 변화",`<div class="mini-data">최근 거래 ${d.tx.length.toLocaleString("ko-KR")}건 · 계좌 ${d.accounts.length.toLocaleString("ko-KR")}개 · 확인 필요 ${t.review.toLocaleString("ko-KR")}건</div>`);
+      replaceEmpty("확인 필요",t.review?`<div class="mini-data">자동 분류가 확정되지 않은 거래가 ${t.review.toLocaleString("ko-KR")}건 있습니다.</div>`:`<div class="mini-data">확인 필요한 거래가 없습니다.</div>`);
+    }
+    if(page==="병원"){
+      const clinic=d.tx.filter(x=>x.ownerType==="CLINIC");
+      const groups={};clinic.filter(x=>x.kind==="expense").forEach(x=>groups[x.category||"기타"]=(groups[x.category||"기타"]||0)+Number(x.amount||0));
+      replaceEmpty("지출 구성",Object.keys(groups).length?`<div class="mini-data">${Object.entries(groups).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([k,v])=>`<div>${esc(k)} · ${won(v)}</div>`).join("")}</div>`:`<div class="empty">병원 지출 데이터가 없습니다.</div>`);
+      replaceEmpty("매출·지출 추이",`<div class="mini-data">이번 달 매출 ${won(t.clinicIncome)} · 지출 ${won(t.clinicExpense)} · 잔액 ${won(t.clinicIncome-t.clinicExpense)}</div>`);
+    }
+    if(page==="가정"){
+      const householdCard=[...document.querySelectorAll(".card")].find(c=>c.querySelector(".card-title")?.textContent?.trim()==="가족 전체 거래");
+      if(!householdCard){
+        const holder=document.createElement("div"); holder.className="card"; holder.innerHTML=`<div class="card-header"><div class="card-title">가족 전체 거래</div><div class="muted">최근 8건</div></div><table class="table"><thead><tr><th>날짜</th><th>소유자</th><th>구분</th><th>분류</th><th>금액</th><th>상태</th></tr></thead><tbody>${txRows(d.tx.filter(x=>x.ownerType!=="CLINIC"),8)}</tbody></table>`; document.getElementById("content")?.appendChild(holder);
+      }
+      replaceEmpty("가족 전체 거래",`<div class="table-wrap"><table class="table"><thead><tr><th>날짜</th><th>소유자</th><th>구분</th><th>분류</th><th>금액</th><th>상태</th></tr></thead><tbody>${txRows(d.tx.filter(x=>x.ownerType!=="CLINIC"),8)}</tbody></table></div>`);
+    }
+    if(page==="투자"){
+      const rows=["HUSBAND","WIFE","CHILD1","CHILD2"].map(o=>{const a=d.investments.filter(x=>x.ownerType===o);const v=a.reduce((n,x)=>n+Number(x.value||0),0);const p=a.reduce((n,x)=>n+Number(x.pnl||0),0);return `<tr><td>${owner(o)}</td><td>${won(v)}</td><td>${won(p)}</td><td>${v?((p/v)*100).toFixed(1)+"%":"—"}</td></tr>`}).join("");
+      const table=document.querySelector("#content table");if(table&&table.querySelector("th")?.textContent==="소유자")table.querySelector("tbody")?.remove();
+      const t2=document.querySelector("#content table");if(t2)t2.innerHTML=`<tr><th>소유자</th><th>평가금액</th><th>평가손익</th><th>수익률</th></tr>${rows}`;
+    }
+    if(page==="자산"){
+      replaceEmpty("자산 구성",`<div class="mini-data">예금·계좌 ${won(t.accounts)} · 투자 ${won(t.investments)} · 기타 자산 ${won(t.assets)}</div>`);
+      replaceEmpty("부채",t.liabilities?`<div class="mini-data">현재 부채 ${won(t.liabilities)}</div>`:`<div class="empty">등록된 부채가 없습니다.</div>`);
+    }
+    if(page==="설정") await financeStatus();
+  }
+  async function financeStatus(){
+    if(!window.NEST_USER||!window.NEST_AUTH?.nestFunctions)return;
+    try{
+      const fn=window.NEST_AUTH.nestFunctions;
+      const call=name=>window.NEST_AUTH.__financeCallable?.(name)||null;
+      // 기존 연결 UI를 그대로 사용하되, 상태 카드에 마지막 동기화/계좌/확인필요를 덧붙입니다.
+      const r=await (await import("https://www.gstatic.com/firebasejs/12.19.0/firebase-functions.js")).httpsCallable(fn,"getFinanceConnectionStatus")({});
+      const cs=r.data?.connections||[];
+      const box=$("nest-finance-result");
+      if(box){box.textContent=cs.length?cs.map(x=>`${owner(x.ownerType)} · ${x.provider} · ${x.status}${x.lastSyncedAt?.seconds?" · 마지막 동기화 완료":""}`).join("\n"):"아직 연결된 금융기관이 없습니다.";}
+    }catch(e){console.warn(e)}
+  }
+  const originalRender=window.render;
+  if(typeof originalRender==="function"){
+    window.render=function(page){originalRender(page);setTimeout(()=>hydrate().catch(console.error),0);};
+  }
+  window.addEventListener("nest-auth-changed",()=>setTimeout(()=>hydrate().catch(console.error),250));
+  window.addEventListener("nest-data-ready",()=>setTimeout(()=>hydrate().catch(console.error),100));
+  document.addEventListener("DOMContentLoaded",()=>setTimeout(()=>hydrate().catch(console.error),400));
+  async function renderNetWorthPeriod(period){
+    const d=await data(); if(!d)return;
+    const count=period==="all"?999:Number(period||9);
+    const months=d.snapshots.slice().sort((a,b)=>String(a.month).localeCompare(String(b.month))).slice(-count);
+    const card=[...document.querySelectorAll(".card")].find(c=>c.querySelector(".card-title")?.textContent?.trim()==="순자산 추이");
+    if(!card)return;
+    const e=card.querySelector(".chart,.mini-data,.empty");
+    if(!e)return;
+    if(!months.length){e.outerHTML='<div class="empty">저장된 월별 순자산 데이터가 없습니다.</div>';return;}
+    const max=Math.max(...months.map(x=>Number(x.netWorth||0)),1);
+    e.outerHTML=`<div class="mini-data" style="display:grid;grid-template-columns:repeat(${months.length},1fr);gap:8px;align-items:end;min-height:210px">${months.map(x=>`<div style="text-align:center"><div style="height:150px;display:flex;align-items:end;justify-content:center"><div style="width:22px;height:${Math.max(4,Math.round(Number(x.netWorth||0)/max*150))}px;border-radius:5px 5px 0 0;background:#536779"></div></div><div style="font-size:10px;color:#8b9199;margin-top:7px">${esc(x.month)}</div></div>`).join("")}</div>`;
+  }
+  window.NEST_V16={hydrate,totals,renderNetWorthPeriod};
+})();
+</script>
+
+
+<script id="nest-v17-finance-tools">
+(function(){
+  const $=id=>document.getElementById(id);
+  const fn=name=>window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,name):null;
+  const owner=v=>({HUSBAND:"남편",WIFE:"나",CHILD1:"첫째",CHILD2:"둘째",FAMILY:"가족 공동",CLINIC:"병원"}[v]||v||"");
+  const esc=v=>String(v??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+  function download(name,text,type){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
+  async function history(){
+    const f=fn("getFinanceSyncHistory"); if(!f)return;
+    const r=await f({}); const jobs=r.data?.jobs||[]; const meta=$("nest-finance-meta");
+    if(meta)meta.textContent=jobs.length?jobs.map(j=>`${j.finishedAt?.seconds?new Date(j.finishedAt.seconds*1000).toLocaleString("ko-KR"):"시간 없음"} · ${owner(j.ownerType)} · ${j.provider} · ${j.imported||0}건 · ${j.status}`).join("\n"):"동기화 이력이 없습니다.";
+  }
+  async function review(){
+    const f=fn("getFinanceReviewQueue"); if(!f)return;
+    const r=await f({}); const rows=r.data?.transactions||[]; const panel=$("nest-review-panel"); if(!panel)return;
+    panel.style.display="block";
+    panel.innerHTML=rows.length?`<strong>확인 필요 ${rows.length}건</strong>`+rows.slice(0,30).map(x=>`<div class="nest-review-row"><span>${esc(String(x.date||"").slice(0,10))}</span><span>${esc(x.merchantName||x.memo||"거래")}</span><span>${Number(x.amount||0).toLocaleString("ko-KR")}원</span><button data-tx="${esc(x.id)}" data-category="교육비">교육비</button><button data-tx="${esc(x.id)}" data-category="식비">식비</button><button data-tx="${esc(x.id)}" data-category="교통">교통</button><button data-tx="${esc(x.id)}" data-category="의료">의료</button><button data-tx="${esc(x.id)}" data-category="기타">기타</button></div>`).join(""):"<strong>확인 필요한 거래가 없습니다.</strong>";
+  }
+  async function exportCsv(){
+    if(!window.NEST_DATA||!window.NEST_USER)return;
+    const rows=await window.NEST_DATA.getCollection("transactions");
+    const head=["id","date","ownerType","kind","category","amount","merchantName","memo","source","accountId","classificationStatus","isInternalTransfer"];
+    const q=v=>`"${String(v??"").replaceAll('"','""')}"`;
+    const csv="\uFEFF"+[head.join(","),...rows.map(r=>head.map(k=>q(r[k])).join(","))].join("\n");
+    download(`NEST_transactions_${new Date().toISOString().slice(0,10)}.csv`,csv,"text/csv;charset=utf-8");
+  }
+  async function backup(){
+    if(!window.NEST_USER)return;
+    const f=fn("getFinanceBackupBundle"); if(!f) return;
+    const r=await f({});
+    download(`NEST_backup_${new Date().toISOString().slice(0,10)}.json`,JSON.stringify(r.data||{},null,2),"application/json;charset=utf-8");
+  }
+  function parseCsv(text){
+    const rows=[]; let row=[], cell="", quoted=false;
+    for(let i=0;i<text.length;i++){
+      const c=text[i], n=text[i+1];
+      if(c==='"'){ if(quoted && n==='"'){cell+='"';i++;} else quoted=!quoted; }
+      else if(c===',' && !quoted){row.push(cell);cell="";}
+      else if((c==='\n'||c==='\r') && !quoted){ if(c==='\r'&&n==='\n')i++; row.push(cell); if(row.some(v=>v!==''))rows.push(row); row=[];cell=""; }
+      else cell+=c;
+    }
+    if(cell!==''||row.length){row.push(cell);if(row.some(v=>v!==''))rows.push(row);}
+    if(!rows.length)return [];
+    const headers=rows.shift().map(x=>x.trim());
+    return rows.map(r=>Object.fromEntries(headers.map((h,i)=>[h,r[i]??''])));
+  }
+  async function importCsv(file){
+    if(!file||!window.NEST_USER)return;
+    const text=await file.text(), rows=parseCsv(text);
+    if(!rows.length){alert("CSV에 거래 데이터가 없습니다.");return;}
+    const map={"남편":"HUSBAND","나":"WIFE","첫째":"CHILD1","둘째":"CHILD2","가족 공동":"FAMILY","병원":"CLINIC"};
+    const owner=prompt("가져올 거래의 소유자를 입력하세요. 남편 / 나 / 첫째 / 둘째 / 가족 공동 / 병원");
+    if(!map[owner])return;
+    const validator=fn("validateFinanceImport");
+    if(validator){const v=await validator({rows});if(!v.data?.valid){alert(`가져오기 중단: 오류 ${v.data?.errorCount||0}건, 경고 ${v.data?.warningCount||0}건`);return;}if(v.data?.warningCount&&!confirm(`검증 경고 ${v.data.warningCount}건이 있습니다. 그래도 가져올까요?`))return;}
+    const f=fn("importFinanceCsv"); if(!f)return;
+    const r=await f({ownerType:map[owner],rows});
+    alert(`CSV 거래 ${Number(r.data?.imported||0).toLocaleString("ko-KR")}건을 가져왔습니다. 자동분류가 애매한 거래는 확인 필요로 남겼습니다.`);
+    if(window.NEST_REFRESH_AGGREGATION)await window.NEST_REFRESH_AGGREGATION();
+  }
+  document.addEventListener("click",async e=>{const b=e.target.closest("#nest-review-panel [data-tx]");if(!b)return;try{const f=fn("reviewFinanceTransaction");if(!f)throw new Error("거래 확인 서버가 준비되지 않았습니다.");await f({id:b.dataset.tx,category:b.dataset.category});await review();if(window.NEST_REFRESH_AGGREGATION)await window.NEST_REFRESH_AGGREGATION()}catch(err){alert(err.message||"거래 확인에 실패했습니다.")}});
+  document.addEventListener("DOMContentLoaded",()=>{
+    $("nest-finance-history")?.addEventListener("click",()=>history().catch(e=>alert(e.message)));
+    $("nest-finance-review")?.addEventListener("click",()=>review().catch(e=>alert(e.message)));
+    $("nest-finance-export")?.addEventListener("click",()=>exportCsv().catch(e=>alert(e.message)));
+    $("nest-finance-backup")?.addEventListener("click",()=>backup().catch(e=>alert(e.message)));
+    $("nest-finance-csv-import")?.addEventListener("click",()=>$("nest-finance-csv-file")?.click());
+    $("nest-finance-csv-file")?.addEventListener("change",e=>importCsv(e.target.files?.[0]).catch(err=>alert(err.message)));
+  });
+  window.NEST_V17={history,review,exportCsv,backup};
+})();
+</script>
+
+<script id="nest-v18-finance-summary">
+(function(){
+  const owner=v=>({HUSBAND:"남편",WIFE:"나",CHILD1:"첫째",CHILD2:"둘째",FAMILY:"가족 공동",CLINIC:"병원"}[v]||v||"");
+  const won=n=>Number(n||0).toLocaleString("ko-KR")+"원";
+  const fn=name=>window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,name):null;
+  async function load(){
+    const f=fn("getFinanceSummary"); if(!f||!window.NEST_USER)return;
+    try{
+      const r=await f({}); const d=r.data||{}; const box=document.getElementById("nest-finance-summary");
+      if(box) box.innerHTML=`<div class="card-title">연결 금융 현황</div><div class="mini-data">계좌 ${Number(d.accounts?.length||0).toLocaleString("ko-KR")}개 · 계좌 잔액 ${won(d.accountBalance)} · 거래 ${Number(d.transactionCount||0).toLocaleString("ko-KR")}건 · 확인 필요 ${Number(d.reviewCount||0).toLocaleString("ko-KR")}건</div>`;
+    }catch(e){console.warn("finance summary",e);}
+  }
+  window.addEventListener("nest-auth-changed",()=>setTimeout(load,400));
+  document.addEventListener("DOMContentLoaded",()=>setTimeout(load,900));
+  window.NEST_V18_FINANCE={load};
+})();
+</script>
+
+<script id="nest-v38-completion-pass">
+(function(){
+  const owners=[['HUSBAND','남편'],['WIFE','나'],['CHILD1','첫째'],['CHILD2','둘째'],['FAMILY','가족 공동'],['CLINIC','병원']];
+  const ownerOptions=owners.map(x=>`<option value="${x[0]}">${x[1]}</option>`).join('');
+  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const won=v=>Number(v||0).toLocaleString('ko-KR')+'원';
+  const data=()=>window.NEST_DATA;
+  async function list(c){return data()?.list?data().list(c):[]}
+  async function save(c,x){if(!data()?.add)throw new Error('로그인이 필요합니다.');return data().add(c,x)}
+  async function upd(c,id,x){return data().update(c,id,x)}
+  async function del(c,id){return data().remove(c,id)}
+  function today(){return new Date().toISOString().slice(0,10)}
+  function notify(msg){const old=document.getElementById('n38-toast');if(old)old.remove();const d=document.createElement('div');d.id='n38-toast';d.textContent=msg;d.style.cssText='position:fixed;right:24px;bottom:24px;z-index:500;background:#20252b;color:#fff;padding:12px 16px;border-radius:10px;font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,.18)';document.body.appendChild(d);setTimeout(()=>d.remove(),2200)}
+
+  async function renderRealExtended(tab){
+    const wrap=document.getElementById('nest-real-form-wrap'), table=document.getElementById('nest-real-table-wrap'), status=document.getElementById('nest-real-status');
+    if(!wrap||!table)return;
+    if(!window.NEST_USER){table.innerHTML='<div class="nest-real-empty">Google 로그인 후 실제 데이터를 입력할 수 있습니다.</div>';return}
+    if(tab==='accounts'){
+      wrap.innerHTML=`<div class="nest-real-form"><input id="n38-ac-bank" placeholder="은행/금융기관"><input id="n38-ac-name" placeholder="계좌 별칭"><select id="n38-ac-owner">${ownerOptions}</select><input id="n38-ac-balance" type="number" min="0" placeholder="현재 잔액"><button id="n38-ac-save">계좌 저장</button></div>`;
+      document.getElementById('n38-ac-save').onclick=async()=>{const bank=document.getElementById('n38-ac-bank').value.trim();const name=document.getElementById('n38-ac-name').value.trim()||bank;const balance=Number(document.getElementById('n38-ac-balance').value);if(!bank||balance<0)return alert('금융기관과 잔액을 입력하세요.');const f=window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,'saveFinanceAccount'):null;if(!f)throw new Error('계좌 저장 서버가 준비되지 않았습니다.');await f({bankName:bank,name,ownerType:document.getElementById('n38-ac-owner').value,balance});notify('계좌가 저장되었습니다.');renderRealExtended('accounts')};
+      const rows=await list('accounts');status.textContent=`Firestore 연결됨 · ${rows.length}건`;
+      table.innerHTML=rows.length?`<table class="nest-real-table"><thead><tr><th>금융기관</th><th>별칭</th><th>소유자</th><th>잔액</th><th></th></tr></thead><tbody>${rows.map(x=>`<tr><td>${esc(x.bankName)}</td><td>${esc(x.name)}</td><td>${esc(ownerLabel(x.ownerType))}</td><td>${won(x.balance)}</td><td><button class="nest-real-action" data-n38-del="accounts" data-id="${esc(x.id)}">삭제</button></td></tr>`).join('')}</tbody></table>`:'<div class="nest-real-empty">등록된 계좌가 없습니다.</div>';
+      return;
+    }
+    if(tab==='liabilities'){
+      wrap.innerHTML=`<div class="nest-real-form"><input id="n38-li-name" placeholder="부채명"><select id="n38-li-owner">${ownerOptions.replace('<option value="CLINIC">병원</option>','')}</select><input id="n38-li-value" type="number" min="0" placeholder="현재 잔액"><input id="n38-li-rate" type="number" min="0" step="0.01" placeholder="금리 %"><button id="n38-li-save">부채 저장</button></div>`;
+      document.getElementById('n38-li-save').onclick=async()=>{const name=document.getElementById('n38-li-name').value.trim();const value=Number(document.getElementById('n38-li-value').value);if(!name||value<0)return alert('부채명과 잔액을 입력하세요.');const f=window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,'saveLiability'):null;if(!f)throw new Error('부채 저장 서버가 준비되지 않았습니다.');await f({name,ownerType:document.getElementById('n38-li-owner').value,value,interestRate:Number(document.getElementById('n38-li-rate').value)||0});notify('부채가 저장되었습니다.');renderRealExtended('liabilities')};
+      const rows=await list('liabilities');status.textContent=`Firestore 연결됨 · ${rows.length}건`;
+      table.innerHTML=rows.length?`<table class="nest-real-table"><thead><tr><th>부채</th><th>소유자</th><th>잔액</th><th>금리</th><th></th></tr></thead><tbody>${rows.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(ownerLabel(x.ownerType))}</td><td>${won(x.value||x.amount)}</td><td>${Number(x.interestRate||0).toFixed(2)}%</td><td><button class="nest-real-action" data-n38-del="liabilities" data-id="${esc(x.id)}">삭제</button></td></tr>`).join('')}</tbody></table>`:'<div class="nest-real-empty">등록된 부채가 없습니다.</div>';
+      return;
+    }
+    if(window.NEST_V6?.activate){window.NEST_V6.activate(tab);return}
+  }
+
+  function addExtendedTabs(){
+    const tabs=document.querySelector('.nest-real-tabs');if(!tabs||tabs.dataset.n38)return;
+    tabs.dataset.n38='1';
+    tabs.insertAdjacentHTML('beforeend','<button data-real-tab="accounts">계좌</button><button data-real-tab="liabilities">부채</button>');
+    document.addEventListener('click',e=>{const b=e.target.closest('[data-real-tab]');if(!b)return;setTimeout(()=>{if(b.dataset.realTab==='accounts'||b.dataset.realTab==='liabilities')renderRealExtended(b.dataset.realTab)},0)});
+    document.addEventListener('click',async e=>{const b=e.target.closest('[data-n38-del]');if(!b)return;if(!confirm('이 자료를 삭제할까요?'))return;try{const map={accounts:'deleteFinanceAccount',liabilities:'deleteLiability'};const f=window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,map[b.dataset.n38Del]):null;if(!f)throw new Error('삭제 서버가 준비되지 않았습니다.');await f({id:b.dataset.id});notify('삭제되었습니다.');renderRealExtended(b.dataset.n38Del)}catch(err){alert(err.message||'삭제에 실패했습니다')}});
+  }
+
+  async function renderHousehold38(){
+    const root=document.getElementById('content');if(!root)return;
+    const tx=(await list('transactions')).filter(x=>x.ownerType!=='CLINIC'&&!x.isInternalTransfer);
+    const tab=window.N38_HH_TAB||'전체', owner=window.N38_HH_OWNER||'전체';
+    const filtered=owner==='전체'?tx:tx.filter(x=>x.ownerType===owner);
+    const now=new Date(),ym=now.toISOString().slice(0,7),year=String(now.getFullYear());
+    const cur=filtered.filter(x=>String(x.date||'').slice(0,7)===ym), inc=cur.filter(x=>x.kind==='income'),exp=cur.filter(x=>x.kind==='expense'),edu=exp.filter(x=>x.category==='교육비'),eduYear=filtered.filter(x=>x.kind==='expense'&&x.category==='교육비'&&String(x.date||'').startsWith(year));
+    const tabsHtml=`<div class="n38-filter"><div>${['전체','수입','지출'].map(x=>`<button class="${tab===x?'active':''}" data-n38-hhtab="${x}">${x}</button>`).join('')}</div><div><select id="n38-hh-owner"><option>전체</option>${owners.filter(x=>x[0]!=='CLINIC').map(x=>`<option value="${x[0]}" ${owner===x[0]?'selected':''}>${x[1]}</option>`).join('')}</select></div></div>`;
+    const visible=tab==='수입'?inc:tab==='지출'?exp:cur;
+    const byOwner={};edu.forEach(x=>byOwner[x.ownerType||'FAMILY']=(byOwner[x.ownerType||'FAMILY']||0)+Number(x.amount||0));
+    const byCat={};edu.forEach(x=>byCat[x.subcategory||x.educationCategory||x.memo||'교육비']=(byCat[x.subcategory||x.educationCategory||x.memo||'교육비']||0)+Number(x.amount||0));
+    const months={};tx.forEach(x=>{const m=String(x.date||'').slice(0,7);if(!m)return;(months[m] ||= {month:m,income:0,expense:0});if(x.kind==='income')months[m].income+=Number(x.amount||0);else if(x.kind==='expense')months[m].expense+=Number(x.amount||0)});
+    const rows=visible.slice().sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,50);
+    root.innerHTML=`<div class="page-intro"><h1>가정</h1><p>부부와 자녀의 생활·교육비를 가정 재무 안에서 관리합니다.</p></div><div class="summary-grid"><div class="summary-card"><div class="summary-label">이번 달 수입</div><div class="summary-value">${won(inc.reduce((a,x)=>a+Number(x.amount||0),0))}</div><div class="summary-change">${owner==='전체'?'가정 전체':ownerLabel(owner)}</div></div><div class="summary-card"><div class="summary-label">이번 달 지출</div><div class="summary-value">${won(exp.reduce((a,x)=>a+Number(x.amount||0),0))}</div><div class="summary-change">실제 거래</div></div><div class="summary-card"><div class="summary-label">이번 달 교육비</div><div class="summary-value">${won(edu.reduce((a,x)=>a+Number(x.amount||0),0))}</div><div class="summary-change">교육비 분류</div></div><div class="summary-card"><div class="summary-label">올해 교육비</div><div class="summary-value">${won(eduYear.reduce((a,x)=>a+Number(x.amount||0),0))}</div><div class="summary-change">${year}년 누적</div></div></div>${tabsHtml}<div class="grid-2"><div class="card"><div class="card-header"><div class="card-title">교육비 · 소유자별</div><div class="muted">이번 달</div></div><div class="n37-list">${owners.filter(x=>x[0]!=='CLINIC').map(x=>`<div class="n37-row"><span>${x[1]}</span><b>${won(byOwner[x[0]]||0)}</b></div>`).join('')}</div></div><div class="card"><div class="card-header"><div class="card-title">교육비 · 세부 분류</div><div class="muted">이번 달</div></div><div class="n37-list">${Object.entries(byCat).length?Object.entries(byCat).sort((a,b)=>b[1]-a[1]).map(x=>`<div class="n37-row"><span>${esc(x[0])}</span><b>${won(x[1])}</b></div>`).join(''):'<div class="n37-empty">세부 교육비 분류가 없습니다.</div>'}</div></div></div><div class="card"><div class="card-header"><div class="card-title">최근 거래</div><div class="muted">${rows.length}건 표시</div></div>${rows.length?`<div style="overflow:auto"><table class="n37-table"><thead><tr><th>일자</th><th>구분</th><th>소유자</th><th>분류</th><th>내용</th><th class="n37-num">금액</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${esc(x.date)}</td><td>${x.kind==='income'?'수입':'지출'}</td><td>${esc(ownerLabel(x.ownerType))}</td><td>${esc(x.category||'미분류')}</td><td>${esc(x.memo||x.merchantName||'')}</td><td class="n37-num">${won(x.amount)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="n37-empty">해당 조건의 실제 거래가 없습니다.</div>'}</div>`;
+    root.querySelectorAll('[data-n38-hhtab]').forEach(b=>b.onclick=()=>{window.N38_HH_TAB=b.dataset.n38Hhtab;renderHousehold38()});
+    root.querySelector('#n38-hh-owner').onchange=e=>{window.N38_HH_OWNER=e.target.value;renderHousehold38()};
+  }
+
+  async function renderPension38(){
+    const root=document.getElementById('content');if(!root)return;
+    const rows=await list('pensions');const total=rows.reduce((a,x)=>a+Number(x.currentValue||0),0),monthly=rows.reduce((a,x)=>a+Number(x.expectedMonthlyPayout||0),0);const target=Number(window.NEST_PENSION_TARGET||0);const startAges=rows.map(x=>Number(x.startAge)).filter(Boolean);const first=startAges.length?Math.min(...startAges):null;
+    root.innerHTML=`<div class="page-intro"><h1>연금</h1><p>공무원연금·연금저축·IRP·개인연금과 은퇴 이후 예상 현금흐름을 관리합니다.</p></div><div class="summary-grid"><div class="summary-card"><div class="summary-label">현재 연금자산</div><div class="summary-value">${won(total)}</div><div class="summary-change">실제 입력 자료</div></div><div class="summary-card"><div class="summary-label">예상 월 연금</div><div class="summary-value">${won(monthly)}</div><div class="summary-change">입력된 예상액 합계</div></div><div class="summary-card"><div class="summary-label">등록 연금</div><div class="summary-value">${rows.length}건</div><div class="summary-change">실제 pensions</div></div><div class="summary-card"><div class="summary-label">가장 이른 개시 나이</div><div class="summary-value">${first?first+'세':'—'}</div><div class="summary-change">입력 자료 기준</div></div></div><div class="card"><div class="card-header"><div class="card-title">은퇴 월소득 목표</div><div class="muted">목표를 입력하면 부족액을 계산합니다.</div></div><div class="n38-pension-goal"><input id="n38-pension-target" type="number" min="0" placeholder="월 목표 연금액" value="${target||''}"><button id="n38-pension-target-save">목표 저장</button><b>${target?`부족액 ${won(Math.max(0,target-monthly))}`:'목표가 없습니다.'}</b></div></div><div class="card"><div class="card-header"><div class="card-title">연금 일정</div><div class="muted">개시 나이 기준</div></div>${rows.length?`<div class="n38-timeline">${rows.slice().sort((a,b)=>(Number(a.startAge)||999)-(Number(b.startAge)||999)).map(x=>`<div class="n38-timeline-item"><div class="n38-dot"></div><div><b>${esc(x.name||'연금')}</b><span>${esc(x.type||'')} · ${ownerLabel(x.ownerType)} · ${x.startAge?x.startAge+'세 개시':'개시 나이 미입력'}</span><strong>${won(x.expectedMonthlyPayout)} /월</strong></div></div>`).join('')}</div>`:'<div class="n37-empty">등록된 연금 자료가 없습니다.</div>'}</div><div class="card"><div class="card-header"><div class="card-title">연금 상세</div><div class="muted">실제 저장 데이터</div></div>${rows.length?`<div style="overflow:auto"><table class="n37-table"><thead><tr><th>연금</th><th>종류</th><th>소유자</th><th>현재잔액</th><th>월수령</th><th>개시</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.type)}</td><td>${ownerLabel(x.ownerType)}</td><td>${won(x.currentValue)}</td><td>${won(x.expectedMonthlyPayout)}</td><td>${x.startAge?x.startAge+'세':'—'}</td></tr>`).join('')}</tbody></table></div>`:'<div class="n37-empty">등록된 연금 자료가 없습니다.</div>'}</div>`;
+    root.querySelector('#n38-pension-target-save').onclick=()=>{window.NEST_PENSION_TARGET=Number(root.querySelector('#n38-pension-target').value)||0;localStorage.setItem('nest_pension_target',String(window.NEST_PENSION_TARGET));renderPension38()};
+  }
+
+  async function renderInsurance38(){
+    const root=document.getElementById('content');if(!root)return;
+    const rows=await list('insurancePolicies');const total=rows.reduce((a,x)=>a+Number(x.monthlyPremium||0),0);const by={};rows.forEach(x=>by[x.ownerType||'FAMILY']=(by[x.ownerType||'FAMILY']||0)+Number(x.monthlyPremium||0));
+    root.innerHTML=`<div class="page-intro"><h1>보험</h1><p>보험증권 원본과 입력된 계약 핵심정보를 함께 관리합니다. AI 판독 결과가 없는 항목은 임의로 채우지 않습니다.</p></div><div class="summary-grid"><div class="summary-card"><div class="summary-label">가족 월 보험료</div><div class="summary-value">${won(total)}</div><div class="summary-change">입력된 보험료 합계</div></div><div class="summary-card"><div class="summary-label">등록 보험</div><div class="summary-value">${rows.length}건</div><div class="summary-change">실제 저장 자료</div></div><div class="summary-card"><div class="summary-label">갱신형</div><div class="summary-value">${rows.filter(x=>x.renewal).length}건</div><div class="summary-change">입력된 계약 기준</div></div><div class="summary-card"><div class="summary-label">납입완료</div><div class="summary-value">${rows.filter(x=>x.paymentComplete).length}건</div><div class="summary-change">입력된 계약 기준</div></div></div><div class="card"><div class="card-header"><div class="card-title">소유자별 월 보험료</div></div><div class="n37-list">${owners.filter(x=>x[0]!=='CLINIC').map(x=>`<div class="n37-row"><span>${x[1]}</span><b>${won(by[x[0]]||0)}</b></div>`).join('')}</div></div><div class="card"><div class="card-header"><div class="card-title">보험 목록</div><div class="muted">입력된 정보만 표시</div></div>${rows.length?`<div style="overflow:auto"><table class="n37-table"><thead><tr><th>보험사</th><th>상품</th><th>소유자</th><th>월보험료</th><th>기간</th><th>갱신</th><th>만기</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${esc(x.insurer||'—')}</td><td>${esc(x.productName||x.name||'—')}</td><td>${ownerLabel(x.ownerType)}</td><td>${won(x.monthlyPremium)}</td><td>${esc(x.paymentPeriod||x.period||'—')}</td><td>${x.renewal?'갱신형':'—'}</td><td>${esc(x.maturityDate||'—')}</td></tr>`).join('')}</tbody></table></div>`:'<div class="n37-empty">등록된 보험 자료가 없습니다.</div>'}</div>`;
+  }
+
+  const oldRender=window.render;
+  window.render=async function(page){
+    if(page==='가정'){await renderHousehold38();return}
+    if(page==='연금'){window.NEST_PENSION_TARGET=Number(localStorage.getItem('nest_pension_target')||0);await renderPension38();return}
+    if(page==='보험'){await renderInsurance38();return}
+    if(oldRender)return oldRender(page)
+  };
+  document.addEventListener('DOMContentLoaded',()=>{addExtendedTabs();window.NEST_PENSION_TARGET=Number(localStorage.getItem('nest_pension_target')||0)});
+  window.addEventListener('nest-auth-changed',()=>{addExtendedTabs();if(document.getElementById('pageTitle')?.textContent==='가정')renderHousehold38();});
+  window.addEventListener('nest-data-ready',()=>{addExtendedTabs()});
+  setTimeout(addExtendedTabs,800);
+})();
+</script>
+<style id="nest-v38-completion-css">
+.n38-filter{display:flex;justify-content:space-between;gap:12px;align-items:center;margin:0 0 14px;flex-wrap:wrap}.n38-filter>div:first-child{display:flex;gap:6px}.n38-filter button,.n38-filter select,.n38-pension-goal button{border:1px solid #dfe3e8;background:#fff;border-radius:9px;padding:8px 12px;font-size:12px;cursor:pointer}.n38-filter button.active{background:#20252b;color:#fff;border-color:#20252b}.n38-filter select{min-width:120px}.n38-pension-goal{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.n38-pension-goal input{border:1px solid #dfe3e8;border-radius:9px;padding:9px 11px;width:210px}.n38-pension-goal b{font-size:13px}.n38-timeline{position:relative;margin:8px 0 0 7px;padding-left:22px;border-left:1px solid #dfe3e8}.n38-timeline-item{position:relative;padding:4px 0 18px}.n38-dot{position:absolute;left:-28px;top:8px;width:11px;height:11px;border-radius:50%;background:#536779;border:3px solid #fff;box-shadow:0 0 0 1px #dfe3e8}.n38-timeline-item span,.n38-timeline-item strong{display:block;font-size:12px;color:#7a818a;margin-top:4px}.n38-timeline-item strong{color:#20242a}.n38-filter+.grid-2{margin-bottom:14px}
+</style>
+
+
+<style id="nest-v43-enhancements">
+.n43-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.n43-grid .wide{grid-column:1/-1}.n43-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.n43-form label{display:flex;flex-direction:column;gap:5px;font-size:12px}.n43-input,.n43-select,.n43-text{width:100%;padding:9px 10px;border:1px solid #dfe3e8;border-radius:8px;background:#fff}.n43-text{min-height:70px;resize:vertical}.n43-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.n43-pill{display:inline-flex;padding:4px 8px;border-radius:999px;background:#f1f3f5;font-size:11px}.n43-check{font-size:12px;color:#59636e}.n43-bars{display:flex;align-items:flex-end;gap:7px;height:150px;padding:10px 4px;border-bottom:1px solid #ddd}.n43-bar{flex:1;min-width:10px;background:#6b7280;border-radius:5px 5px 0 0;position:relative}.n43-bar span{position:absolute;bottom:-20px;left:50%;transform:translateX(-50%);font-size:9px;white-space:nowrap}.n43-status{padding:10px 12px;border-radius:8px;background:#f7f8fa;font-size:12px}
+@media(max-width:760px){.n43-grid,.n43-form{grid-template-columns:1fr}}
+</style>
+<script id="nest-v43-enhancements">
+(function(){
+  const esc43=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const owner43={HUSBAND:'남편',WIFE:'나',CHILD1:'첫째',CHILD2:'둘째',FAMILY:'가족 공동',CLINIC:'병원'};
+  const won43=n=>Math.round(Number(n)||0).toLocaleString('ko-KR')+'원';
+  const fn43=n=>window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,n):null;
+  async function col43(c){return window.NEST_DATA?.list?window.NEST_DATA.list(c):[]}
+  function refresh(){if(window.NEST_REFRESH_AGGREGATION)window.NEST_REFRESH_AGGREGATION();if(window.NEST_REFRESH_REAL_DATA)window.NEST_REFRESH_REAL_DATA();}
+
+  async function enhancedRealData(){
+    const root=document.getElementById('content');if(!root)return;
+    const tx=await col43('transactions'),assets=await col43('assets'),inv=await col43('investments');
+    const current=(window.NEST_V43_TAB||'transactions');
+    const rows=current==='transactions'?tx:current==='assets'?assets:inv;
+    const title=current==='transactions'?'거래':current==='assets'?'자산':'투자';
+    const body=rows.length?`<div style="overflow:auto"><table class="nest-real-table"><thead><tr>${current==='transactions'?'<th>날짜</th><th>구분</th><th>소유자</th><th>분류</th><th>금액</th><th>메모</th><th></th>':current==='assets'?'<th>자산명</th><th>항목</th><th>소유자</th><th>금액</th><th></th>':'<th>종목</th><th>분류</th><th>소유자</th><th>평가금액</th><th>손익</th><th></th>'}</tr></thead><tbody>${rows.map(x=>current==='transactions'?`<tr><td>${esc43(x.date)}</td><td>${x.kind==='income'?'수입':'지출'}</td><td>${owner43[x.ownerType]||esc43(x.ownerType)}</td><td>${esc43(x.category)}</td><td>${won43(x.amount)}</td><td>${esc43(x.memo)}</td><td><button class="nest-real-action" data-v43-edit="transactions" data-id="${esc43(x.id)}">수정</button> <button class="nest-real-action" data-v43-del="transactions" data-id="${esc43(x.id)}">삭제</button></td></tr>`:current==='assets'?`<tr><td>${esc43(x.name)}</td><td>${esc43(x.category)}</td><td>${owner43[x.ownerType]||esc43(x.ownerType)}</td><td>${won43(x.value)}</td><td><button class="nest-real-action" data-v43-edit="assets" data-id="${esc43(x.id)}">수정</button> <button class="nest-real-action" data-v43-del="assets" data-id="${esc43(x.id)}">삭제</button></td></tr>`:`<tr><td>${esc43(x.name)}</td><td>${esc43(x.category)}</td><td>${owner43[x.ownerType]||esc43(x.ownerType)}</td><td>${won43(x.value)}</td><td>${won43(x.pnl)}</td><td><button class="nest-real-action" data-v43-edit="investments" data-id="${esc43(x.id)}">수정</button> <button class="nest-real-action" data-v43-del="investments" data-id="${esc43(x.id)}">삭제</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="nest-real-empty">저장된 데이터가 없습니다.</div>';
+    const form=current==='transactions'?`<div class="n43-form"><label>구분<select id="v43-kind" class="n43-select"><option value="income">수입</option><option value="expense">지출</option></select></label><label>소유자<select id="v43-owner" class="n43-select">${Object.entries(owner43).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>날짜<input id="v43-date" class="n43-input" type="date"></label><label>금액<input id="v43-value" class="n43-input" type="number" min="0"></label><label>분류<input id="v43-category" class="n43-input" placeholder="예: 인건비, 교육비, 청구"></label><label>메모<input id="v43-memo" class="n43-input"></label><div class="wide"><button class="n37-action primary" id="v43-save">거래 저장</button></div></div>`:current==='assets'?`<div class="n43-form"><label>자산명<input id="v43-name" class="n43-input"></label><label>소유자<select id="v43-owner" class="n43-select">${Object.entries(owner43).filter(([k])=>k!=='CLINIC').map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>항목<input id="v43-category" class="n43-input" placeholder="예금/부동산/자동차/기타"></label><label>평가금액<input id="v43-value" class="n43-input" type="number" min="0"></label><div class="wide"><button class="n37-action primary" id="v43-save">자산 저장</button></div></div>`:`<div class="n43-form"><label>종목<input id="v43-name" class="n43-input"></label><label>소유자<select id="v43-owner" class="n43-select">${Object.entries(owner43).filter(([k])=>k!=='CLINIC').map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>분류<input id="v43-category" class="n43-input" placeholder="ETF/주식/레버리지 ETF 등"></label><label>평가금액<input id="v43-value" class="n43-input" type="number" min="0"></label><label>평가손익<input id="v43-pnl" class="n43-input" type="number"></label><div class="wide"><button class="n37-action primary" id="v43-save">투자 저장</button></div></div>`;
+    root.innerHTML=`<div class="page-intro"><h1>실제 데이터</h1><p>Firestore에 저장되는 가족 재무 원자료입니다. 입력·수정·삭제가 모두 실제 저장 데이터에 반영됩니다.</p></div><div class="n43-toolbar"><button class="n37-action ${current==='transactions'?'primary':''}" data-v43-tab="transactions">거래</button><button class="n37-action ${current==='assets'?'primary':''}" data-v43-tab="assets">자산</button><button class="n37-action ${current==='investments'?'primary':''}" data-v43-tab="investments">투자</button><span class="n43-pill">${title} ${rows.length}건</span></div><div class="card"><div class="card-header"><div class="card-title">${title} 입력</div><div class="muted">실제 데이터만 입력</div></div>${form}</div><div class="card"><div class="card-header"><div class="card-title">저장된 ${title}</div><div class="muted">수정하면 Firestore에 즉시 반영</div></div>${body}</div>`;
+    const date=document.getElementById('v43-date');if(date)date.value=new Date().toISOString().slice(0,10);
+    document.querySelectorAll('[data-v43-tab]').forEach(b=>b.onclick=()=>{window.NEST_V43_TAB=b.dataset.v43Tab;enhancedRealData()});
+    document.getElementById('v43-save')?.addEventListener('click',async()=>{try{if(current==='transactions'){const amount=Number(document.getElementById('v43-value').value);if(!amount)return alert('금액을 입력하세요.');await window.NEST_DATA.add('transactions',{kind:document.getElementById('v43-kind').value,ownerType:document.getElementById('v43-owner').value,date:document.getElementById('v43-date').value,amount,category:document.getElementById('v43-category').value.trim()||'기타',memo:document.getElementById('v43-memo').value.trim(),source:'manual',dataSource:'manual'});}else if(current==='assets'){const value=Number(document.getElementById('v43-value').value);if(!value)return alert('금액을 입력하세요.');await window.NEST_DATA.add('assets',{name:document.getElementById('v43-name').value.trim()||'자산',category:document.getElementById('v43-category').value.trim()||'기타',ownerType:document.getElementById('v43-owner').value,value,source:'manual',dataSource:'manual'});}else{const value=Number(document.getElementById('v43-value').value);if(!value)return alert('평가금액을 입력하세요.');await window.NEST_DATA.add('investments',{name:document.getElementById('v43-name').value.trim()||'투자',category:document.getElementById('v43-category').value.trim()||'기타',ownerType:document.getElementById('v43-owner').value,value,pnl:Number(document.getElementById('v43-pnl').value)||0,source:'manual',dataSource:'manual'});} await enhancedRealData();refresh();}catch(e){alert(e.message||'저장 실패')}});
+  }
+  async function edit43(collection,id){const rows=await col43(collection),x=rows.find(r=>r.id===id);if(!x)return;let patch={};if(collection==='transactions'){const date=prompt('날짜',x.date||'');if(date===null)return;const amount=prompt('금액',x.amount||0);if(amount===null)return;const category=prompt('분류',x.category||'기타');if(category===null)return;const memo=prompt('메모',x.memo||'');if(memo===null)return;patch={date,amount:Number(amount)||0,category,memo};}else if(collection==='assets'){const name=prompt('자산명',x.name||'');if(name===null)return;const value=prompt('평가금액',x.value||0);if(value===null)return;const category=prompt('항목',x.category||'기타');if(category===null)return;patch={name,value:Number(value)||0,category};}else{const name=prompt('종목',x.name||'');if(name===null)return;const value=prompt('평가금액',x.value||0);if(value===null)return;const pnl=prompt('평가손익',x.pnl||0);if(pnl===null)return;patch={name,value:Number(value)||0,pnl:Number(pnl)||0};}await window.NEST_DATA.update(collection,id,patch);await enhancedRealData();refresh();}
+  document.addEventListener('click',async e=>{const edit=e.target.closest('[data-v43-edit]');if(edit){await edit43(edit.dataset.v43Edit,edit.dataset.id)}const del=e.target.closest('[data-v43-del]');if(del){if(!confirm('이 실제 데이터를 삭제할까요?'))return;await window.NEST_DATA.remove(del.dataset.v43Del,del.dataset.id);await enhancedRealData();refresh()}});
+
+  async function enhanceSettings(){
+    const root=document.getElementById('content');if(!root)return;
+    const f=fn43('getGoogleSheetsStatus'),q=fn43('getFinanceReadiness');let gs={configured:false},fr={};try{if(f){const r=await f({});gs=r.data||gs}}catch(e){}try{if(q){const r=await q({});fr=r.data||fr}}catch(e){}
+    const existing=root.innerHTML;
+    root.innerHTML=existing+`<div class="card"><div class="card-header"><div class="card-title">실제 연동 준비 상태</div><div class="muted">외부 서비스는 인증정보가 있어야 연결됩니다.</div></div><div class="n43-grid"><div class="n43-status"><b>Google Sheets</b><br>${gs.configured?'서버 연결 주소 설정됨':'서버 연결 주소 미설정'}<div class="n43-check">구매·물품 동기화는 서버의 inventoryUrl 설정 후 실행됩니다.</div></div><div class="n43-status"><b>금융결제원 오픈뱅킹</b><br>${fr.KFTC_OPENBANKING?.ready?'API 설정 완료':'API 계약·인증정보 필요'}<div class="n43-check">client_id · client_secret · redirect_uri · 기관코드 · 암호화키</div></div><div class="n43-status"><b>COOCON</b><br>${fr.COOCON?.ready?'API 설정 완료':'API 계약·인증정보 필요'}<div class="n43-check">실제 계약 및 인증정보가 필요합니다.</div></div><div class="n43-status"><b>보험 AI 판독</b><br>원본 저장 완료 · AI 분석 연결 대기<div class="n43-check">AI가 확인하지 않은 보장내용은 NEST가 임의로 생성하지 않습니다.</div></div></div></div><div class="card"><div class="card-header"><div class="card-title">연동 전 최종 확인</div></div><div class="n43-check">① 실제 금융기관 계약/인증정보 → ② 서버 Secret 설정 → ③ 동기화 → ④ NEST 원자료 검증 → ⑤ 대시보드 검증 순서로 진행합니다.</div></div>`;
+  }
+
+  // Hook only after the original renderer has finished; no navigation structure is changed.
+  const oldRender=window.render;
+  if(oldRender)window.render=async function(page){await oldRender(page);if(page==='설정')await enhanceSettings();};
+  window.NEST_V43={openReal:enhancedRealData};
+  window.addEventListener('nest-data-ready',()=>{if(document.getElementById('pageTitle')?.textContent==='전체')setTimeout(()=>window.NEST_REFRESH_AGGREGATION?.(),100)});
+})();
+</script>
 </body>
 </html>
+
+<script id="nest-v23-insurance-upload">
+(function(){
+  const $=id=>document.getElementById(id);
+  function safe(v){return String(v||"").replace(/[^\w가-힣.-]+/g,"_").slice(0,80);}
+  async function list(){
+    if(!window.NEST_USER||!window.NEST_FIRESTORE)return;
+    const col=window.NEST_FIRESTORE.collection, getDocs=window.NEST_FIRESTORE.getDocs;
+    const snap=await getDocs(col(window.NEST_AUTH.nestDb,"nestFamilies",window.NEST_USER.uid,"insurancePolicies"));
+    const box=$("nest-insurance-list");if(!box)return;
+    box.innerHTML=snap.docs.map(d=>{const x=d.data();return `<div style="padding:8px 0;border-bottom:1px solid #eee"><strong>${safe(x.fileName||x.productName||"보험증권")}</strong> · ${safe(x.insurer||"보험사 미입력")} · 월 ${Number(x.monthlyPremium||0).toLocaleString("ko-KR")}원 · ${safe(x.status||"uploaded")}</div>`}).join("")||"등록된 보험증권이 없습니다.";
+  }
+  async function upload(){
+    const file=$("nest-insurance-file")?.files?.[0], owner=$("nest-insurance-owner")?.value;
+    if(!file||!window.NEST_USER||!window.NEST_AUTH?.nestStorage){return;}
+    if(file.size>15*1024*1024){alert("보험 파일은 15MB 이하만 저장할 수 있습니다.");return;}
+    const status=$("nest-insurance-status"); if(status)status.textContent="보험증권을 안전하게 저장하는 중입니다.";
+    const path=`users/${window.NEST_USER.uid}/insurance/${Date.now()}_${safe(file.name)}`;
+    const r=storageRef(window.NEST_AUTH.nestStorage,path);
+    await uploadBytes(r,file,{contentType:file.type||"application/octet-stream",customMetadata:{ownerType:owner,originalName:file.name}});
+    const url=await getDownloadURL(r);
+    const add=window.NEST_FIRESTORE?.addDoc;
+    const col=window.NEST_FIRESTORE?.collection;
+    if(add&&col){
+      await add(col(window.NEST_AUTH.nestDb,"nestFamilies",window.NEST_USER.uid,"insurancePolicies"),{ownerType:owner,fileName:file.name,filePath:path,fileUrl:url,mimeType:file.type||"",size:file.size,status:"uploaded",createdAt:window.NEST_FIRESTORE.serverTimestamp()});
+    }
+    if(status)status.innerHTML=`<strong>${file.name}</strong> 저장 완료 · 보험 분석 대기`;
+    await list();
+  }
+  document.addEventListener("click",e=>{if(e.target.id==="nest-insurance-upload")upload().catch(err=>alert(err.message||"보험증권 저장에 실패했습니다."));});
+  document.addEventListener("DOMContentLoaded",()=>setTimeout(()=>list().catch(()=>{}),700));
+  window.addEventListener("nest-auth-changed",()=>setTimeout(()=>list().catch(()=>{}),500));
+})();
+</script>
+
+<script id="nest-v28-inventory-insights">
+(function(){
+  const fn=name=>window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,name):null;
+  const esc=v=>String(v??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+  async function load(){
+    if(!window.NEST_USER)return;
+    const f=fn("getInventoryInsights");if(!f)return;
+    try{const r=await f({}),rows=r.data?.insights||[],box=document.getElementById("nest-inventory-insights");if(!box)return;
+      box.innerHTML=rows.length?rows.slice(0,12).map(x=>`<div style="padding:7px 0;border-bottom:1px solid #eee"><strong>${esc(x.item)}</strong> · 최근 ${esc(x.lastPurchaseDate||"—")} · 평균 ${x.avgIntervalDays?x.avgIntervalDays+"일":"—"} · 다음 ${esc(x.predictedNextPurchase||"—")} · 누적 ${Number(x.totalSpend||0).toLocaleString("ko-KR")}원</div>`).join(""):"구매 데이터가 없습니다.";
+    }catch(e){console.warn(e);}
+  }
+  window.addEventListener("nest-auth-changed",()=>setTimeout(load,500));
+  document.addEventListener("DOMContentLoaded",()=>setTimeout(load,800));
+})();
+</script>
+<script id="nest-v31-dashboard-server">
+(function(){
+  const fn=name=>window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,name):null;
+  const won=n=>Number(n||0).toLocaleString("ko-KR")+"원";
+  async function load(){
+    if(!window.NEST_USER)return;
+    const f=fn("getDashboardData");if(!f)return;
+    try{const r=await f({months:12}),d=r.data||{};
+      document.querySelectorAll(".summary-card").forEach(c=>{const l=c.querySelector(".summary-label")?.textContent?.trim(),v=c.querySelector(".summary-value");if(!v)return;const map={"총자산":d.totals?.assets+d.totals?.investments+d.totals?.accounts,"순자산":d.totals?.netWorth,"총부채":d.totals?.liabilities,"총투자자산":d.totals?.investments};if(map[l]!==undefined)v.textContent=won(map[l]);});
+    }catch(e){console.warn(e)}
+  }
+  window.addEventListener("nest-auth-changed",()=>setTimeout(load,500));document.addEventListener("DOMContentLoaded",()=>setTimeout(load,900));
+})();
+</script>
+<script id="nest-v32-cashflow">
+(function(){
+ const fn=name=>window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,name):null;
+ async function load(){
+  if(!window.NEST_USER)return; const f=fn("getMonthlyCashflow");if(!f)return;
+  try{const r=await f({}),rows=r.data?.months||[];const cards=[...document.querySelectorAll(".card")];const card=cards.find(c=>c.querySelector(".card-title")?.textContent?.trim()==="매출·지출 추이");if(!card||!rows.length)return;
+   const max=Math.max(...rows.slice(-12).flatMap(x=>[x.income,x.expense]),1);
+   const e=card.querySelector(".mini-data,.empty");if(e)e.outerHTML=`<div class="mini-data" style="display:grid;grid-template-columns:repeat(${Math.min(rows.length,12)},1fr);gap:8px;align-items:end;min-height:180px">${rows.slice(-12).map(x=>`<div style="text-align:center"><div style="height:120px;display:flex;align-items:end;justify-content:center;gap:3px"><div title="수입" style="width:12px;height:${Math.max(3,Math.round(x.income/max*120))}px;background:#536779"></div><div title="지출" style="width:12px;height:${Math.max(3,Math.round(x.expense/max*120))}px;background:#9aa5ad"></div></div><div style="font-size:10px;color:#888">${x.month}</div></div>`).join("")}</div>`;
+  }catch(e){console.warn(e)}
+ }
+ document.addEventListener("DOMContentLoaded",()=>setTimeout(load,1000));window.addEventListener("nest-auth-changed",()=>setTimeout(load,500));
+})();
+</script>
+<script id="nest-v33-rebalance">
+(function(){
+ const fn=name=>window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,name):null;
+ async function load(){
+  if(!window.NEST_USER)return;const f=fn("getInvestmentRebalance");if(!f)return;
+  try{const r=await f({}),rows=r.data?.rows||[];const tables=[...document.querySelectorAll("table")];const table=tables.find(t=>t.querySelector("th")?.textContent?.trim()==="소유자");if(!table)return;
+   const body=rows.map(x=>`<tr><td>${({HUSBAND:"남편",WIFE:"나",CHILD1:"첫째",CHILD2:"둘째",FAMILY:"가족 공동"}[x.ownerType]||x.ownerType)}</td><td>${Number(x.actualPercent||0).toFixed(1)}%</td><td>${x.targetPercent==null?"—":Number(x.targetPercent).toFixed(1)+"%"}</td><td>${x.deviation==null?"—":(x.deviation>0?"+":"")+Number(x.deviation).toFixed(1)+"%p"}</td></tr>`).join("");
+   if(body)table.innerHTML=`<tr><th>소유자</th><th>현재 비중</th><th>목표 비중</th><th>편차</th></tr>${body}`;
+  }catch(e){console.warn(e)}
+ }
+ document.addEventListener("DOMContentLoaded",()=>setTimeout(load,1000));window.addEventListener("nest-auth-changed",()=>setTimeout(load,500));
+})();
+</script>
+<script id="nest-v34-tax-ui">
+(function(){
+ const fn=name=>window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,name):null;
+ function csv(text){const out=[];let row=[],cell="",q=false;for(let i=0;i<text.length;i++){const c=text[i],n=text[i+1];if(c==='"'){if(q&&n==='"'){cell+='"';i++;}else q=!q}else if(c===','&&!q){row.push(cell);cell=""}else if((c==='\n'||c==='\r')&&!q){if(c==='\r'&&n==='\n')i++;row.push(cell);if(row.some(v=>v!==''))out.push(row);row=[];cell=""}else cell+=c}if(cell!==''||row.length){row.push(cell);if(row.some(v=>v!==''))out.push(row)}if(!out.length)return[];const h=out.shift().map(x=>x.trim());return out.map(r=>Object.fromEntries(h.map((x,i)=>[x,r[i]??""])))}
+ async function importTax(file){const f=fn("importTaxRecords");if(!f||!file)return;const rows=csv(await file.text());const r=await f({rows});alert(`세금자료 ${Number(r.data?.imported||0).toLocaleString("ko-KR")}건을 저장했습니다.`)}
+ document.addEventListener("DOMContentLoaded",()=>{const page=document.getElementById("content");if(!page)return;const wrap=document.createElement("div");wrap.className="card";wrap.innerHTML=`<div class="card-header"><div class="card-title">세금자료</div><div class="muted">실제 자료만 저장</div></div><input id="nest-tax-file" type="file" accept=".csv,text/csv"><button id="nest-tax-import" class="small-button" style="margin-left:8px">CSV 가져오기</button>`;if(document.getElementById("pageTitle")?.textContent?.trim()==="설정")page.appendChild(wrap);document.addEventListener("click",e=>{if(e.target.id==="nest-tax-import")document.getElementById("nest-tax-file")?.click()});document.addEventListener("change",e=>{if(e.target.id==="nest-tax-file")importTax(e.target.files?.[0]).catch(err=>alert(err.message||"세금자료 저장 실패"))})});
+})();
+</script>
+<script id="nest-v36-operating-center">
+(function(){
+  const fn=n=>window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,n):null;
+  const won=n=>Number(n||0).toLocaleString('ko-KR')+'원';
+  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  function mount(){
+    if(document.getElementById('nest-operating-center')) return;
+    if(document.getElementById('pageTitle')?.textContent?.trim()!=='설정') return;
+    const root=document.getElementById('content'); if(!root)return;
+    const card=document.createElement('div'); card.className='card'; card.id='nest-operating-center';
+    card.innerHTML=`<div class="card-header"><div class="card-title">NEST 재무 분석센터</div><div class="muted">실제 저장 데이터만 분석</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <button class="small-button" data-nest-action="executive">전체 재무 요약</button>
+      <button class="small-button" data-nest-action="quality">데이터 건강검진</button>
+      <button class="small-button" data-nest-action="recurring">반복 지출</button>
+      <button class="small-button" data-nest-action="anomaly">이상 거래</button>
+      <button class="small-button" data-nest-action="forecast">현금흐름 전망</button>
+      <button class="small-button" data-nest-action="insurance">보험 현황</button>
+      <button class="small-button" data-nest-action="pension">연금 현황</button>
+      <button class="small-button" data-nest-action="purchase">구매 분석</button>
+      </div><div id="nest-operating-result" class="empty">버튼을 눌러 실제 데이터를 조회하세요.</div>`;
+    root.appendChild(card);
+  }
+  async function run(action){
+    const box=document.getElementById('nest-operating-result'); if(!box)return;
+    const map={executive:'getExecutiveDashboard',quality:'getFinanceHealth',recurring:'getRecurringFinanceItems',anomaly:'getFinanceAnomalies',forecast:'getCashflowForecast',insurance:'getInsuranceSummary',pension:'getPensionSummary',purchase:'getInventoryInsights'};
+    const f=fn(map[action]); if(!f){box.textContent='로그인 후 사용할 수 있습니다.';return;}
+    box.textContent='데이터를 분석하는 중입니다.';
+    try{const r=await f({}),d=r.data||{};
+      if(action==='executive') box.innerHTML=`<div class="mini-data"><strong>${esc(d.month)}</strong><br>순자산 ${won(d.totals?.netWorth)} · 이번 달 수입 ${won(d.cashflow?.income)} · 지출 ${won(d.cashflow?.expense)} · 병원 영업잔액 ${won((d.clinic?.income||0)-(d.clinic?.expense||0))}<br>교육비 ${won(d.education?.monthTotal)} · 월 보험료 ${won(d.insurance?.monthlyPremium)} · 예상 월연금 ${won(d.pension?.expectedMonthly)}</div>`;
+      else if(action==='quality') box.innerHTML=(d.issues||[]).map(x=>`<div style="padding:6px 0">${esc(x.severity)} · ${esc(x.message)}</div>`).join('')||'데이터 건강검진에서 발견된 문제가 없습니다.';
+      else if(action==='recurring') box.innerHTML=(d.items||[]).slice(0,20).map(x=>`<div style="padding:6px 0;border-bottom:1px solid #eee">${esc(x.merchant)} · ${x.averageIntervalDays}일 주기 · 평균 ${won(x.averageAmount)}</div>`).join('')||'반복 패턴이 충분히 쌓이지 않았습니다.';
+      else if(action==='anomaly') box.innerHTML=(d.anomalies||[]).slice(0,20).map(x=>`<div style="padding:6px 0;border-bottom:1px solid #eee">${esc(x.date)} · ${esc(x.merchant)} · ${won(x.amount)} · 이상도 ${Number(x.zScore).toFixed(1)}</div>`).join('')||'현재 감지된 이상 거래가 없습니다.';
+      else if(action==='forecast') box.innerHTML=`최근 ${d.basisMonths}개월 기준 월평균 수입 ${won(d.averageMonthlyIncome)} · 지출 ${won(d.averageMonthlyExpense)} · 예상 순현금흐름 ${won(d.forecastNet)}`;
+      else if(action==='insurance') box.innerHTML=`월 보험료 ${won(d.monthlyTotal)}<br>`+Object.entries(d.byOwner||{}).map(([o,v])=>`${esc(o)} ${won(v)}`).join(' · ');
+      else if(action==='pension') box.innerHTML=`현재 연금자산 ${won(d.totalValue)} · 예상 월 수령액 ${won(d.totalMonthlyPayout)}`;
+      else if(action==='purchase') box.innerHTML=(d.insights||[]).slice(0,15).map(x=>`<div style="padding:6px 0;border-bottom:1px solid #eee">${esc(x.item)} · 최근 ${esc(x.lastPurchaseDate||'—')} · 평균 ${x.avgIntervalDays||'—'}일 · 누적 ${won(x.totalSpend)}</div>`).join('')||'구매 데이터가 없습니다.';
+    }catch(e){box.textContent=e.message||'분석에 실패했습니다.';}
+  }
+  document.addEventListener('click',e=>{const a=e.target?.dataset?.nestAction;if(a)run(a)});
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(mount,500));
+  window.addEventListener('nest-auth-changed',()=>setTimeout(mount,300));
+})();
+</script>
+
+<script id="nest-intelligence-ui">
+(function(){
+  const fmt=n=>Number(n||0).toLocaleString("ko-KR")+"원";
+  async function loadIntelligence(){
+    const st=document.getElementById("nest-intelligence-status"), grid=document.getElementById("nest-intelligence-grid");
+    if(!window.NEST_FUNCTIONS?.getFinancialOSIntelligence){st.textContent="금융 분석 서버가 준비되면 표시됩니다.";return;}
+    st.textContent="실제 재무 데이터를 분석하는 중입니다…";
+    try{const r=await window.NEST_FUNCTIONS.getFinancialOSIntelligence({}); const e=r.data?.executive||{},c=r.data?.cashflow||{},s=r.data?.spending||{},d=r.data?.dataQuality||{};
+      grid.innerHTML=`<div class="card"><div class="card-title">순자산</div><div class="summary-value">${fmt(e.netWorth)}</div><div class="muted">총자산 ${fmt(e.totalAssets)} · 부채 ${fmt(e.debt)}</div></div><div class="card"><div class="card-title">이번 달 현금흐름</div><div class="summary-value">${fmt(e.currentMonth?.net)}</div><div class="muted">수입 ${fmt(e.currentMonth?.income)} · 지출 ${fmt(e.currentMonth?.expense)}</div></div><div class="card"><div class="card-title">반복 지출 후보</div><div class="summary-value">${s.recurringCandidates?.length||0}건</div></div><div class="card"><div class="card-title">확인 필요 거래</div><div class="summary-value">${d.needsReview||0}건</div><div class="muted">미분류 ${d.missingCategory||0}건 · 소유자 누락 ${d.missingOwner||0}건</div></div>`; st.textContent=`${r.data?.generatedAt||""} 기준 분석 완료`;
+    }catch(err){st.textContent="분석을 불러오지 못했습니다: "+(err.message||err);}
+  }
+  document.addEventListener("click",e=>{if(e.target?.id==="nest-intelligence-refresh")loadIntelligence();});
+  window.loadNESTIntelligence=loadIntelligence;
+})();
+</script>
+
+<script id="nest-advanced-ui">
+(function(){document.addEventListener("click",async e=>{if(e.target?.id!=="nest-advanced-refresh")return;const st=document.getElementById("nest-intelligence-status");if(!window.NEST_FUNCTIONS?.getFinancialOSAdvanced){st.textContent="심층 분석 서버가 준비되면 표시됩니다.";return;}st.textContent="심층 분석 중입니다…";try{const r=await window.NEST_FUNCTIONS.getFinancialOSAdvanced({});window.NEST_ADVANCED=r.data;st.textContent="심층 분석 완료: 현금흐름·부채·은퇴·보험·투자·병원·교육·세금·유동성·데이터 품질을 분석했습니다.";}catch(err){st.textContent="심층 분석 실패: "+(err.message||err);}});})();
+</script>
+<style id="nest-v37-completion-css">
+.n37-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+.n37-tab{border:1px solid #dfe3e8;background:#fff;border-radius:9px;padding:8px 13px;cursor:pointer;font-size:12px}
+.n37-tab.active{background:#1f2937;color:#fff;border-color:#1f2937}
+.n37-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.n37-select,.n37-input{border:1px solid #dfe3e8;border-radius:8px;padding:8px 10px;background:#fff;font-size:12px}
+.n37-table{width:100%;border-collapse:collapse;font-size:12px}.n37-table th,.n37-table td{padding:9px 7px;border-bottom:1px solid #edf0f2;text-align:left}.n37-table th{color:#747b84;font-weight:650}.n37-num{text-align:right!important;font-variant-numeric:tabular-nums}
+.n37-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.n37-box{background:#f7f8fa;border-radius:10px;padding:14px}.n37-label{font-size:11px;color:#8a9199}.n37-value{font-size:19px;font-weight:750;margin-top:5px}.n37-muted{font-size:11px;color:#8a9199}.n37-action{border:1px solid #dfe3e8;background:#fff;border-radius:8px;padding:7px 10px;cursor:pointer;font-size:12px}.n37-action.primary{background:#1f2937;color:#fff;border-color:#1f2937}
+.n37-chart{display:grid;grid-template-columns:repeat(12,minmax(18px,1fr));gap:7px;align-items:end;height:170px;padding-top:10px}.n37-month{display:flex;align-items:end;justify-content:center;height:140px;gap:2px}.n37-bar{width:10px;border-radius:3px 3px 0 0;min-height:2px}.n37-caption{text-align:center;font-size:9px;color:#8a9199;margin-top:5px}.n37-list{display:grid;gap:7px}.n37-row{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid #edf0f2;font-size:12px}.n37-empty{padding:18px 0;color:#8a9199;font-size:12px}.n37-form{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.n37-form label{font-size:11px;color:#747b84;display:grid;gap:4px}.n37-form .wide{grid-column:1/-1}
+@media(max-width:900px){.n37-grid,.n37-form{grid-template-columns:1fr 1fr}.n37-chart{overflow:hidden}}@media(max-width:600px){.n37-grid,.n37-form{grid-template-columns:1fr}.n37-table{font-size:11px}.n37-table th,.n37-table td{padding:7px 5px}}
+</style>
+<script id="nest-v37-completion">
+(function(){
+  'use strict';
+  const OWNER={HUSBAND:'남편',WIFE:'나',CHILD1:'첫째',CHILD2:'둘째',FAMILY:'가족 공동',CLINIC:'병원'};
+  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const won=n=>Number(n||0).toLocaleString('ko-KR')+'원';
+  const pct=n=>Number(n||0).toFixed(1)+'%';
+  const fn=n=>window.NEST_AUTH?.nestFunctions?httpsCallable(window.NEST_AUTH.nestFunctions,n):null;
+  const nowYM=()=>new Date().toISOString().slice(0,7);
+  const ownerLabel=o=>OWNER[o]||o||'미지정';
+  const sum=(a,k)=>a.reduce((n,x)=>n+Number(x[k]||0),0);
+  const ym=x=>String(x?.date||'').slice(0,7);
+  const moneyCell=n=>`<td class="n37-num">${won(n)}</td>`;
+  let clinicTab='전체', householdTab='전체', investOwner='전체', assetOwner='전체';
+  let clinicData=null, householdData=null, investData=null, assetData=null;
+
+  function tabs(items,current,handler){return `<div class="n37-tabs">${items.map(x=>`<button class="n37-tab ${x===current?'active':''}" data-n37-tab="${esc(x)}">${esc(x)}</button>`).join('')}</div>`}
+  function attachTabs(root,handler){root.querySelectorAll('[data-n37-tab]').forEach(b=>b.addEventListener('click',()=>handler(b.dataset.n37Tab)));}
+  function shell(title,desc,stats,body){return `<div class="page-intro"><h1>${title}</h1><p>${desc}</p></div><div class="summary-grid">${stats.map(x=>`<div class="summary-card"><div class="summary-label">${esc(x[0])}</div><div class="summary-value">${esc(x[1])}</div><div class="summary-change">${esc(x[2]||'')}</div></div>`).join('')}</div>${body}`}
+  function stat(label,value,note=''){return [label,value,note]}
+  function chart(rows){
+    if(!rows.length)return '<div class="n37-empty">해당 기간의 실제 데이터가 없습니다.</div>';
+    const max=Math.max(1,...rows.flatMap(x=>[x.income||0,x.expense||0]));
+    return `<div class="n37-chart">${rows.slice(-12).map(x=>`<div><div class="n37-month"><div class="n37-bar" title="수입 ${won(x.income)}" style="height:${Math.max(2,Math.round((x.income||0)/max*130))}px;background:#536779"></div><div class="n37-bar" title="지출 ${won(x.expense)}" style="height:${Math.max(2,Math.round((x.expense||0)/max*130))}px;background:#9aa5ad"></div></div><div class="n37-caption">${esc(x.month.slice(5))}</div></div>`).join('')}</div>`;
+  }
+  function groupBy(rows,key){const m={};rows.forEach(x=>{const k=x[key]||'기타';m[k]=(m[k]||0)+Number(x.amount||0)});return Object.entries(m).sort((a,b)=>b[1]-a[1]);}
+
+  async function getTx(){return window.NEST_DATA?.list?window.NEST_DATA.list('transactions'):[]}
+  async function getAssets(){return window.NEST_DATA?.list?window.NEST_DATA.list('assets'):[]}
+  async function getInvestments(){return window.NEST_DATA?.list?window.NEST_DATA.list('investments'):[]}
+
+  async function renderClinic(){
+    const root=document.getElementById('content'); if(!root)return;
+    if(!clinicData) clinicData={tx:await getTx()};
+    const tx=clinicData.tx.filter(x=>x.ownerType==='CLINIC'&&!x.isInternalTransfer);
+    const month=nowYM(), cur=tx.filter(x=>ym(x)===month);
+    const income=cur.filter(x=>x.kind==='income'), expense=cur.filter(x=>x.kind==='expense');
+    let body='';
+    if(clinicTab==='전체'){
+      const months={};tx.forEach(x=>{const k=ym(x);if(!k)return;(months[k] ||= {month:k,income:0,expense:0});if(x.kind==='income')months[k].income+=Number(x.amount||0);if(x.kind==='expense')months[k].expense+=Number(x.amount||0)});
+      body=`<div class="card">${tabs(['전체','수입','지출','구매·물품'],clinicTab,()=>{})}<div class="card-header"><div class="card-title">매출·지출 추이</div><div class="muted">최근 12개월 실제 거래</div></div>${chart(Object.values(months).sort((a,b)=>a.month.localeCompare(b.month)))}</div>
+      <div class="grid-2"><div class="card"><div class="card-header"><div class="card-title">수입 구성</div><div class="muted">이번 달</div></div>${listHtml(groupBy(income,'category').map(([k,v])=>({k,v})))}</div><div class="card"><div class="card-header"><div class="card-title">지출 구성</div><div class="muted">이번 달</div></div>${listHtml(groupBy(expense,'category').map(([k,v])=>({k,v})))}</div></div>
+      <div class="card"><div class="card-header"><div class="card-title">최근 병원 거래</div><div class="muted">${tx.length?tx.length.toLocaleString('ko-KR')+'건':'실제 거래 없음'}</div></div>${txTable(tx.slice().sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,20))}</div>`;
+    }else if(clinicTab==='수입') body=clinicTransactionView('수입',income,tx.filter(x=>x.kind==='income'));
+    else if(clinicTab==='지출') body=clinicTransactionView('지출',expense,tx.filter(x=>x.kind==='expense'));
+    else body=await clinicPurchaseView();
+    root.innerHTML=shell('병원 운영 현황','병원 수입·지출·구매·물품을 한 화면의 탭으로 관리합니다.',[stat('이번 달 매출',won(sum(income,'amount')),'실제 거래'),stat('이번 달 지출',won(sum(expense,'amount')),'실제 거래'),stat('영업 잔액',won(sum(income,'amount')-sum(expense,'amount')),'수입-지출')],body);
+    if(clinicTab==='구매·물품') hydratePurchaseAlerts();
+    attachTabs(root,async t=>{clinicTab=t;await renderClinic()});
+  }
+  function listHtml(rows){return rows.length?`<div class="n37-list">${rows.slice(0,12).map(x=>`<div class="n37-row"><span>${esc(x.k)}</span><b>${won(x.v)}</b></div>`).join('')}</div>`:'<div class="n37-empty">실제 데이터가 없습니다.</div>'}
+  function txTable(rows){return rows.length?`<div style="overflow:auto"><table class="n37-table"><thead><tr><th>일자</th><th>구분</th><th>분류</th><th>내용</th><th class="n37-num">금액</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${esc(String(x.date||'').slice(0,10))}</td><td>${x.kind==='income'?'수입':'지출'}</td><td>${esc(x.category||'미분류')}</td><td>${esc(x.merchantName||x.memo||x.description||'')}</td>${moneyCell(x.amount)}</tr>`).join('')}</tbody></table></div>`:'<div class="n37-empty">실제 거래가 없습니다.</div>'}
+  function clinicTransactionView(title,current,all){const groups=groupBy(current,'category');return `<div class="card"><div class="card-header"><div class="card-title">${title} 상세</div><div class="muted">이번 달 ${current.length.toLocaleString('ko-KR')}건</div></div>${listHtml(groups.map(([k,v])=>({k,v})))}</div><div class="card"><div class="card-header"><div class="card-title">최근 ${title} 거래</div><div class="muted">실제 저장 데이터</div></div>${txTable(all.slice().sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,50))}</div>`}
+  async function clinicPurchaseView(){
+    const f=fn('getInventoryInsights');let insights=[];try{if(f){const r=await f({});insights=r.data?.insights||[]}}catch(e){}
+    return `<div class="card"><div class="card-header"><div class="card-title">구매·물품 분석</div><div class="muted">실제 inventoryPurchases 데이터</div></div><div class="n37-toolbar"><input id="n37-inventory-file" type="file" accept=".csv,text/csv"><button class="n37-action primary" id="n37-inventory-import">구매 CSV 가져오기</button><button class="n37-action" id="n42-sheets-sync">Google Sheets 동기화</button></div>${insights.length?`<div class="n37-list">${insights.slice(0,30).map(x=>`<div class="n37-row"><span>${esc(x.item)} · 최근 ${esc(x.lastPurchaseDate||'—')} · 평균 ${x.avgIntervalDays||'—'}일 주기 · 다음 ${esc(x.predictedNextPurchase||'—')}</span><b>${won(x.totalSpend)}</b></div>`).join('')}</div>`:'<div class="n37-empty">구매 데이터가 없습니다. Google Sheets 원본 CSV를 가져오면 여기에 표시됩니다.</div>'}</div><div class="grid-2"><div class="card"><div class="card-header"><div class="card-title">가격 변동</div></div><div id="n37-purchase-price" class="n37-empty">분석 중</div></div><div class="card"><div class="card-header"><div class="card-title">구매 예정</div></div><div id="n37-purchase-due" class="n37-empty">분석 중</div></div></div>`;
+  }
+
+  async function hydratePurchaseAlerts(){
+    const price=fn('getPurchasePriceAlerts'), due=fn('getPurchaseDueAlerts');
+    try{if(price){const r=await price({});const a=r.data?.alerts||[];const el=document.getElementById('n37-purchase-price');if(el)el.innerHTML=a.length?a.map(x=>`<div class="n37-row"><span>${esc(x.item)} · 최근 ${won(x.latestUnitPrice)}</span><b>${x.changePercent>0?'+':''}${Number(x.changePercent).toFixed(1)}%</b></div>`).join(''):'<div class="n37-empty">가격 상승 경고가 없습니다.</div>'}}catch(e){}
+    try{if(due){const r=await due({});const a=r.data?.items||[];const el=document.getElementById('n37-purchase-due');if(el)el.innerHTML=a.length?a.map(x=>`<div class="n37-row"><span>${esc(x.item)} · 예상 ${esc(x.expectedDate)}</span><b>${x.days<=0?'예정일 도래':x.days+'일 후'}</b></div>`).join(''):'<div class="n37-empty">30일 이내 구매 예정 품목이 없습니다.</div>'}}catch(e){}
+    document.getElementById('n37-inventory-import')?.addEventListener('click',importInventoryCsv);document.getElementById('n42-sheets-sync')?.addEventListener('click',async()=>{try{const f=fn('syncInventoryFromGoogleSheet');if(!f)throw new Error('Google Sheets 동기화 서버가 준비되지 않았습니다.');const r=await f({});alert(`Google Sheets 구매자료 ${Number(r.data?.imported||0).toLocaleString('ko-KR')}건을 동기화했습니다.`);clinicData=null;await renderClinic()}catch(e){alert(e.message||'Google Sheets 동기화 실패')}});
+  }
+  async function importInventoryCsv(){
+    const file=document.getElementById('n37-inventory-file')?.files?.[0],f=fn('importInventoryCsv');if(!file||!f)return;
+    try{const text=await file.text(),rows=csvRows(text);const r=await f({rows});alert(`구매자료 ${Number(r.data?.imported||0).toLocaleString('ko-KR')}건을 저장했습니다.`);clinicData=null;await renderClinic()}catch(e){alert(e.message||'구매자료 가져오기 실패')}
+  }
+  function csvRows(text){const out=[];let row=[],cell='',q=false;for(let i=0;i<text.length;i++){const c=text[i],n=text[i+1];if(c==='"'){if(q&&n==='"'){cell+='"';i++}else q=!q}else if(c===','&&!q){row.push(cell);cell=''}else if((c==='\n'||c==='\r')&&!q){if(c==='\r'&&n==='\n')i++;row.push(cell);if(row.some(v=>v!==''))out.push(row);row=[];cell=''}else cell+=c}if(cell!==''||row.length){row.push(cell);if(row.some(v=>v!==''))out.push(row)}if(!out.length)return[];const h=out.shift().map(x=>x.trim());return out.map(r=>Object.fromEntries(h.map((x,i)=>[x,r[i]??''])))}
+
+  async function renderHousehold(){
+    const root=document.getElementById('content'); if(!root)return;
+    if(!householdData) householdData={tx:await getTx()};
+    const tx=householdData.tx.filter(x=>x.ownerType!=='CLINIC'&&!x.isInternalTransfer), month=nowYM(), cur=tx.filter(x=>ym(x)===month), income=cur.filter(x=>x.kind==='income'),expense=cur.filter(x=>x.kind==='expense');
+    const edu=expense.filter(x=>x.category==='교육비'); const year=String(new Date().getFullYear()); const eduYear=tx.filter(x=>x.kind==='expense'&&x.category==='교육비'&&String(x.date||'').startsWith(year));
+    let body='';
+    if(householdTab==='전체'){
+      const months={};tx.forEach(x=>{const k=ym(x);if(!k)return;(months[k] ||= {month:k,income:0,expense:0});if(x.kind==='income')months[k].income+=Number(x.amount||0);if(x.kind==='expense')months[k].expense+=Number(x.amount||0)});
+      body=`<div class="card"><div class="card-header"><div class="card-title">가정 현금흐름</div><div class="muted">최근 12개월</div></div>${chart(Object.values(months).sort((a,b)=>a.month.localeCompare(b.month)))}</div><div class="grid-2"><div class="card"><div class="card-header"><div class="card-title">교육비</div><div class="muted">이번 달</div></div>${ownerExpenseTable(edu)}</div><div class="card"><div class="card-header"><div class="card-title">지출 구성</div><div class="muted">이번 달</div></div>${listHtml(groupBy(expense,'category').map(([k,v])=>({k,v})))}</div></div><div class="card"><div class="card-header"><div class="card-title">최근 가정 거래</div></div>${txTable(tx.slice().sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,30))}</div>`;
+    }else if(householdTab==='수입')body=householdTransactionView('수입',income);
+    else body=householdTransactionView('지출',expense);
+    root.innerHTML=shell('가정','부부와 자녀의 생활·교육비를 가정 재무 안에서 관리합니다.',[stat('이번 달 수입',won(sum(income,'amount')),'실제 거래'),stat('이번 달 지출',won(sum(expense,'amount')),'실제 거래'),stat('이번 달 교육비',won(sum(edu,'amount')),'교육비 분류'),stat('올해 교육비',won(sum(eduYear,'amount')),year+'년 누적')],tabs(['전체','수입','지출'],householdTab,()=>{})+body);
+    attachTabs(root,async t=>{householdTab=t;await renderHousehold()});
+  }
+  function ownerExpenseTable(rows){const m={};rows.forEach(x=>{const o=x.ownerType||'FAMILY';m[o]=(m[o]||0)+Number(x.amount||0)});return Object.keys(m).length?`<div class="n37-list">${Object.entries(m).map(([o,v])=>`<div class="n37-row"><span>${ownerLabel(o)}</span><b>${won(v)}</b></div>`).join('')}</div>`:'<div class="n37-empty">교육비 거래가 없습니다.</div>'}
+  function householdTransactionView(title,rows){const owners=['HUSBAND','WIFE','CHILD1','CHILD2','FAMILY'];const m={};rows.forEach(x=>{const o=x.ownerType||'FAMILY';m[o]=(m[o]||0)+Number(x.amount||0)});return `<div class="card"><div class="card-header"><div class="card-title">${title} · 소유자별</div></div><div class="n37-list">${owners.map(o=>`<div class="n37-row"><span>${ownerLabel(o)}</span><b>${won(m[o]||0)}</b></div>`).join('')}</div></div><div class="card"><div class="card-header"><div class="card-title">${title} 상세</div></div>${txTable(rows.slice().sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,60))}</div>`}
+
+  async function renderInvest(){
+    const root=document.getElementById('content');if(!root)return;
+    if(!investData)investData={inv:await getInvestments()};
+    const all=investData.inv, filtered=investOwner==='전체'?all:all.filter(x=>x.ownerType===Object.entries(OWNER).find(([k,v])=>v===investOwner)?.[0]);
+    const total=sum(filtered,'value'),pnl=sum(filtered,'pnl'),risky=filtered.filter(x=>x.riskType==='risky'||/레버|SOXL|TQQQ|QLD|주식|ETF|해외|개별/.test(`${x.category||''} ${x.name||''}`)).reduce((n,x)=>n+Number(x.value||0),0);
+    let reb='';try{const f=fn('getInvestmentRebalance');if(f){const r=await f({});reb=r.data?.rows||[]}}catch(e){}
+    const rows=filtered.slice().sort((a,b)=>Number(b.value||0)-Number(a.value||0));
+    root.innerHTML=shell('투자','가족 구성원별 투자자산과 위험자산·목표 비중을 확인합니다.',[stat('평가금액',won(total),investOwner),stat('평가손익',won(pnl),'실제 저장 데이터'),stat('위험자산',won(risky),total?pct(risky/total*100):'—')],tabs(['전체','남편','나','첫째','둘째'],investOwner,()=>{})+`<div class="card"><div class="card-header"><div class="card-title">보유 투자</div><div class="muted">소유자 탭으로 필터</div></div>${rows.length?`<div style="overflow:auto"><table class="n37-table"><thead><tr><th>종목</th><th>분류</th><th>소유자</th><th class="n37-num">평가금액</th><th class="n37-num">평가손익</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${esc(x.name||'')}</td><td>${esc(x.category||x.riskType||'')}</td><td>${ownerLabel(x.ownerType)}</td>${moneyCell(x.value)}${moneyCell(x.pnl)}</tr>`).join('')}</tbody></table></div>`:'<div class="n37-empty">연결된 투자 데이터가 없습니다.</div>'}</div><div class="card"><div class="card-header"><div class="card-title">목표 비중과 현재 비중</div><div class="muted">실제 investmentTargets 기준</div></div>${reb.length?`<div style="overflow:auto"><table class="n37-table"><thead><tr><th>소유자</th><th>현재</th><th>목표</th><th>편차</th></tr></thead><tbody>${reb.map(x=>`<tr><td>${ownerLabel(x.ownerType)}</td><td>${pct(x.actualPercent)}</td><td>${x.targetPercent==null?'—':pct(x.targetPercent)}</td><td>${x.deviation==null?'—':(x.deviation>0?'+':'')+pct(x.deviation)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="n37-empty">목표 비중이 등록되지 않았습니다.</div>'}</div>`);
+    attachTabs(root,async t=>{investOwner=t;await renderInvest()});
+  }
+
+  async function renderAssets(){
+    const root=document.getElementById('content');if(!root)return;
+    if(!assetData){const [assets,inv,acc]=await Promise.all([getAssets(),getInvestments(),window.NEST_DATA?.list('accounts')||Promise.resolve([])]);assetData={assets,inv,acc}}
+    const ownerKey=assetOwner==='전체'?'ALL':Object.entries(OWNER).find(([k,v])=>v===assetOwner)?.[0];
+    const rows=[...assetData.assets.map(x=>({...x,sourceType:'자산'})),...assetData.inv.map(x=>({...x,sourceType:'투자'})),...assetData.acc.map(x=>({...x,value:x.balance,sourceType:'현금·예금'}))].filter(x=>ownerKey==='ALL'||x.ownerType===ownerKey);
+    const total=sum(rows,'value');let debt=0;try{const f=fn('getDebtSummary');if(f){const r=await f({});debt=Number(r.data?.totalDebt||0)}}catch(e){}
+    root.innerHTML=shell('자산','예금·투자·연금·부동산·자동차와 부채를 소유자별로 통합합니다.',[stat('총자산',won(total),assetOwner),stat('총부채',won(debt),'실제 liabilities'),stat('순자산',won(total-debt),'총자산-총부채')],tabs(['전체','남편','나','첫째','둘째','가족 공동'],assetOwner,()=>{})+`<div class="card"><div class="card-header"><div class="card-title">자산·투자·계좌</div><div class="muted">실제 저장 데이터</div></div>${rows.length?`<div style="overflow:auto"><table class="n37-table"><thead><tr><th>항목</th><th>종류</th><th>소유자</th><th class="n37-num">금액</th></tr></thead><tbody>${rows.sort((a,b)=>Number(b.value||0)-Number(a.value||0)).map(x=>`<tr><td>${esc(x.name||x.bankName||'')}</td><td>${esc(x.sourceType||x.category||'')}</td><td>${ownerLabel(x.ownerType)}</td>${moneyCell(x.value)}</tr>`).join('')}</tbody></table></div>`:'<div class="n37-empty">등록된 자산 데이터가 없습니다.</div>'}</div><div class="card"><div class="card-header"><div class="card-title">자산 구성 항목</div><button class="manage-button" onclick="openAssetManager()">항목 관리</button></div><div class="n37-muted">${assetItems.map(esc).join(' · ')}</div></div>`);
+    attachTabs(root,async t=>{assetOwner=t;await renderAssets()});
+  }
+
+  async function renderPension(){
+    const root=document.getElementById('content');if(!root)return;const f=fn('getRetirementIncome');let d={rows:[],totalExpectedMonthly:0,totalCurrentValue:0};try{if(f){const r=await f({});d=r.data||d}}catch(e){}
+    root.innerHTML=shell('연금','공무원연금·연금저축·IRP·개인연금을 실제 자료 기준으로 통합합니다.',[stat('현재 연금자산',won(d.totalCurrentValue),'실제 입력 자료'),stat('예상 월 연금',won(d.totalExpectedMonthly),'입력된 예상액 합계'),stat('등록 연금',String(d.rows.length)+'건','실제 pensions')],`<div class="card"><div class="card-header"><div class="card-title">연금 목록</div><button class="n37-action primary" id="n37-add-pension">연금 추가</button></div>${d.rows.length?`<div style="overflow:auto"><table class="n37-table"><thead><tr><th>연금</th><th>종류</th><th>소유자</th><th class="n37-num">현재 잔액</th><th class="n37-num">예상 월수령</th><th>개시 나이</th><th></th></tr></thead><tbody>${d.rows.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.type)}</td><td>${ownerLabel(x.ownerType)}</td>${moneyCell(x.currentValue)}${moneyCell(x.expectedMonthlyPayout)}<td>${x.startAge??'—'}</td><td><button class="n37-action" data-pension-edit="${esc(x.id)}">수정</button> <button class="n37-action" data-pension-del="${esc(x.id)}">삭제</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="n37-empty">등록된 연금 자료가 없습니다.</div>'}</div><div class="card" id="n37-pension-form" style="display:none"><div class="card-header"><div class="card-title">연금 자료 입력</div><div class="muted">실제 자료만 입력</div></div><div class="n37-form"><label>연금 이름<input class="n37-input" id="pname"></label><label>종류<select class="n37-select" id="ptype"><option>공무원연금</option><option>연금저축</option><option>IRP</option><option>개인연금</option><option>연금보험</option><option>기타</option></select></label><label>소유자<select class="n37-select" id="powner"><option value="WIFE">나</option><option value="HUSBAND">남편</option><option value="CHILD1">첫째</option><option value="CHILD2">둘째</option><option value="FAMILY">가족 공동</option></select></label><label>현재 잔액<input class="n37-input" id="pvalue" type="number"></label><label>월 납입액<input class="n37-input" id="pcontrib" type="number"></label><label>예상 월 수령액<input class="n37-input" id="ppayout" type="number"></label><label>개시 나이<input class="n37-input" id="page" type="number"></label><div class="wide"><button class="n37-action primary" id="n37-save-pension">저장</button></div></div></div><div class="card"><div class="card-header"><div class="card-title">은퇴 월소득 목표</div><div class="muted">목표와 입력된 예상 연금의 차이</div></div><div class="n37-toolbar"><input id="n37-retire-target" class="n37-input" type="number" placeholder="목표 월소득"><button class="n37-action" id="n37-retire-check">차이 계산</button></div><div id="n37-retire-result" class="n37-empty">목표를 입력하면 계산합니다.</div></div>`);
+    document.getElementById('n37-add-pension')?.addEventListener('click',()=>document.getElementById('n37-pension-form').style.display='block');
+    document.getElementById('n37-retire-check')?.addEventListener('click',async()=>{const target=Number(document.getElementById('n37-retire-target').value||0),f=fn('getRetirementGap');if(!f||!target)return;try{const r=await f({targetMonthlyIncome:target}),d=r.data||{};document.getElementById('n37-retire-result').innerHTML=`목표 ${won(d.targetMonthlyIncome)} · 예상 ${won(d.expectedMonthlyIncome)} · 부족액 <b>${won(d.gap)}</b>`}catch(e){}});
+    document.getElementById('n37-save-pension')?.addEventListener('click',async()=>{const f=fn('savePensionRecord');if(!f)return;try{await f({name:document.getElementById('pname').value,type:document.getElementById('ptype').value,ownerType:document.getElementById('powner').value,currentValue:Number(document.getElementById('pvalue').value||0),monthlyContribution:Number(document.getElementById('pcontrib').value||0),expectedMonthlyPayout:Number(document.getElementById('ppayout').value||0),startAge:Number(document.getElementById('page').value||0)||null});await renderPension()}catch(e){alert(e.message||'저장 실패')}});
+    root.querySelectorAll('[data-pension-del]').forEach(b=>b.addEventListener('click',async()=>{if(!confirm('이 연금 자료를 삭제할까요?'))return;try{const f=fn('deletePensionRecord');await f({id:b.dataset.pensionDel});await renderPension()}catch(e){alert(e.message||'삭제 실패')}}));
+    root.querySelectorAll('[data-pension-edit]').forEach(b=>b.addEventListener('click',async()=>{const x=d.rows.find(r=>r.id===b.dataset.pensionEdit);if(!x)return;const name=prompt('연금 이름',x.name||'');if(name===null)return;const payout=prompt('예상 월 수령액',x.expectedMonthlyPayout||0);if(payout===null)return;const age=prompt('개시 나이',x.startAge||'');if(age===null)return;try{const f=fn('updatePensionRecord');await f({id:x.id,name,expectedMonthlyPayout:Number(payout)||0,startAge:Number(age)||null});await renderPension()}catch(e){alert(e.message||'수정 실패')}}));
+  }
+
+  async function renderInsurance(){
+    const root=document.getElementById('content');if(!root)return;const f=fn('getInsuranceSummary');let d={policies:[],monthlyTotal:0,byOwner:{}};try{if(f){const r=await f({});d=r.data||d}}catch(e){}
+    root.innerHTML=shell('보험','보험증권을 저장하고 계약 핵심정보를 구조화해 관리합니다.',[stat('월 보험료',won(d.monthlyTotal),'입력된 보험료 합계'),stat('등록 보험',String(d.policies.length)+'건','실제 저장 자료'),stat('보험료 입력 건',String(d.policies.filter(x=>x.monthlyPremium>0).length)+'건','월 보험료가 입력된 계약')],`<div class="card"><div class="card-header"><div class="card-title">보험증권 저장</div><div class="muted">PDF 또는 이미지</div></div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input id="n37-ins-file" type="file" accept="application/pdf,image/*"><select id="n37-ins-owner" class="n37-select"><option value="HUSBAND">남편</option><option value="WIFE">나</option><option value="CHILD1">첫째</option><option value="CHILD2">둘째</option><option value="FAMILY">가족 공동</option></select><button class="n37-action primary" id="n37-ins-upload">증권 저장</button></div><div class="n37-muted" style="margin-top:8px">현재 버전은 원본 보관까지 지원합니다. 증권 내용의 AI 판독은 별도 AI 연결이 필요하며, 임의의 보험 내용을 생성하지 않습니다.</div></div><div class="card"><div class="card-header"><div class="card-title">보험 목록</div><div class="muted">계약별 핵심정보</div></div>${d.policies.length?`<div style="overflow:auto"><table class="n37-table"><thead><tr><th>보험사/상품</th><th>소유자</th><th class="n37-num">월 보험료</th><th>납입기간</th><th>갱신</th><th>보장금액</th><th>만기</th><th></th></tr></thead><tbody>${d.policies.map(x=>`<tr><td>${esc([x.insurer,x.productName].filter(Boolean).join(' · ')||x.fileName||'보험')}</td><td>${ownerLabel(x.ownerType)}</td>${moneyCell(x.monthlyPremium)}<td>${esc(x.paymentPeriod||'—')}</td><td>${x.renewal==null?'—':x.renewal?'갱신':'비갱신'}</td>${moneyCell(x.coverageAmount)}<td>${esc(x.maturityDate||'—')}</td><td><button class="n37-action" data-ins-edit="${esc(x.id)}">수정</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="n37-empty">등록된 보험증권이 없습니다.</div>'}</div>`);
+    document.getElementById('n37-ins-upload')?.addEventListener('click',uploadInsurance);
+    root.querySelectorAll('[data-ins-edit]').forEach(b=>b.addEventListener('click',()=>editInsurance(b.dataset.insEdit)));
+  }
+  async function editInsurance(id){const p=(await getInsuranceRows()).find(x=>x.id===id);if(!p)return;const ask=(label,key,def='')=>{const v=prompt(label,p[key]??def);return v===null?null:v};const insurer=ask('보험사','insurer');if(insurer===null)return;const productName=ask('상품명','productName');if(productName===null)return;const premium=ask('월 보험료','monthlyPremium',0);if(premium===null)return;const period=ask('납입기간','paymentPeriod');if(period===null)return;const coverage=ask('보장금액','coverageAmount',0);if(coverage===null)return;const maturity=ask('만기일(YYYY-MM-DD)','maturityDate');if(maturity===null)return;const renewalDate=ask('갱신일(YYYY-MM-DD, 없으면 빈칸)','renewalDate');if(renewalDate===null)return;const waitingPeriod=ask('대기기간','waitingPeriod');if(waitingPeriod===null)return;const reductionPeriod=ask('감액기간','reductionPeriod');if(reductionPeriod===null)return;const surrenderValue=ask('해약환급금(기재된 경우)','surrenderValue');if(surrenderValue===null)return;const mainContract=ask('주계약','mainContract');if(mainContract===null)return;const riders=ask('특약','riders');if(riders===null)return;const exclusions=ask('면책/제외사항','exclusions');if(exclusions===null)return;const notes=ask('기타 메모','notes');if(notes===null)return;const renewal=confirm('갱신형 보험입니까?');const paymentComplete=confirm('납입이 완료된 계약입니까?');const f=fn('updateInsuranceMetadata');if(!f)return;try{await f({id,insurer,productName,monthlyPremium:Number(premium)||0,paymentPeriod:period,coverageAmount:Number(coverage)||0,maturityDate:maturity,renewal,renewalDate,waitingPeriod,reductionPeriod,surrenderValue:surrenderValue===''?null:Number(surrenderValue),mainContract,riders:riders?String(riders).split(/[,\n]/).map(x=>x.trim()).filter(Boolean):[],exclusions,notes,paymentComplete});await renderInsurance()}catch(e){alert(e.message||'보험 정보 수정 실패')}}
+  async function getInsuranceRows(){const f=fn('getInsuranceSummary');if(!f)return[];try{const r=await f({});return r.data?.policies||[]}catch(e){return[]}}
+  async function uploadInsurance(){
+    const file=document.getElementById('n37-ins-file')?.files?.[0],owner=document.getElementById('n37-ins-owner')?.value;if(!file||!window.NEST_USER){alert('로그인 후 보험증권 파일을 선택하세요.');return}
+    try{const path=`users/${window.NEST_USER.uid}/insurance/${Date.now()}_${file.name.replace(/[^\w.가-힣-]/g,'_')}`;const ref=storageRef(window.NEST_AUTH.nestStorage,path);await uploadBytes(ref,file,{contentType:file.type||'application/octet-stream',customMetadata:{ownerType:owner,originalName:file.name}});const url=await getDownloadURL(ref);await window.NEST_DATA.add('insurancePolicies',{ownerType:owner,fileName:file.name,filePath:path,fileUrl:url,mimeType:file.type||'',size:file.size,status:'uploaded'});await renderInsurance()}catch(e){alert(e.message||'보험증권 저장 실패')}}
+
+  function renderSettings(){
+    const root=document.getElementById('content');if(!root)return;
+    root.innerHTML=shell('설정','금융 연결·소유자 분류·관리 기준을 확인합니다.',[],`<div class="grid-2"><div class="card"><div class="card-header"><div class="card-title">금융 연결 상태</div><div class="muted">KFTC / COOCON</div></div><div id="n37-finance-status" class="n37-empty">조회 중</div></div><div class="card"><div class="card-header"><div class="card-title">현금영수증·세금자료 분류 기준</div></div><div class="n37-list"><div class="n37-row"><span>남편 전화번호</span><b>가정</b></div><div class="n37-row"><span>내 전화번호</span><b>나</b></div><div class="n37-row"><span>병원 사업자등록번호</span><b>병원</b></div><div class="n37-row"><span>세금자료</span><b>실제 CSV/API 자료만</b></div></div><div class="n37-muted" style="margin-top:8px">전화번호·사업자등록번호 값 자체는 코드에 넣지 않고 연결 설정에서 관리해야 합니다.</div></div></div><div class="grid-2"><div class="card"><div class="card-header"><div class="card-title">자산 구성 항목</div></div><button class="manage-button" onclick="openAssetManager()">항목 관리</button></div><div class="card"><div class="card-header"><div class="card-title">교육비 구성 항목</div></div><button class="manage-button" onclick="openEducationManager()">항목 관리</button></div></div>`);
+    loadFinanceStatus();
+  }
+  async function loadFinanceStatus(){const box=document.getElementById('n37-finance-status');if(!box)return;const f=fn('getFinanceConnectionStatus');if(!f){box.textContent='로그인 필요';return}try{const r=await f({}),d=r.data||{};box.innerHTML=`<div class="n37-list">${Object.entries(d.providers||{}).map(([k,v])=>`<div class="n37-row"><span>${k==='KFTC_OPENBANKING'?'금융결제원 오픈뱅킹':'쿠콘 금융데이터'}</span><b>${v?'설정됨':'API 계약·인증정보 필요'}</b></div>`).join('')}</div><div class="n37-muted" style="margin-top:8px">연결된 계좌: ${(d.connections||[]).length}건</div>`}catch(e){box.textContent=e.message||'조회 실패'}}
+
+  const originalRender=window.render;
+  window.render=async function(pageName){
+    if(pageName==='병원'){await renderClinic();return}
+    if(pageName==='가정'){await renderHousehold();return}
+    if(pageName==='투자'){await renderInvest();return}
+    if(pageName==='자산'){await renderAssets();return}
+    if(pageName==='연금'){await renderPension();return}
+    if(pageName==='보험'){await renderInsurance();return}
+    if(pageName==='설정'){renderSettings();return}
+    if(originalRender)originalRender(pageName);
+  };
+  window.addEventListener('nest-auth-changed',()=>{clinicData=householdData=investData=assetData=null});
+  window.addEventListener('nest-data-ready',()=>{clinicData=householdData=investData=assetData=null});
+})();
+</script>
