@@ -118,6 +118,54 @@ button{font:inherit}
     });
   </script>
 
+
+<style id="nest-auth-visible-style">
+  #nest-auth-panel {
+    margin: 18px 14px 14px;
+    padding: 14px;
+    border-radius: 12px;
+    background: rgba(255,255,255,.08);
+    border: 1px solid rgba(255,255,255,.12);
+  }
+  #nest-auth-panel .nest-auth-title {
+    font-size: 11px;
+    opacity: .65;
+    margin-bottom: 8px;
+  }
+  #nest-auth-panel button {
+    width: 100%;
+    border: 0;
+    border-radius: 9px;
+    padding: 10px 12px;
+    cursor: pointer;
+    font-weight: 700;
+    font-size: 13px;
+  }
+  #nest-auth-panel .nest-login-btn {
+    background: #fff;
+    color: #222;
+  }
+  #nest-auth-panel .nest-logout-btn {
+    background: transparent;
+    color: inherit;
+    border: 1px solid rgba(255,255,255,.2);
+    margin-top: 8px;
+  }
+  #nest-auth-user {
+    display: none;
+  }
+  #nest-auth-name {
+    font-weight: 700;
+    font-size: 13px;
+  }
+  #nest-auth-email {
+    font-size: 11px;
+    opacity: .68;
+    margin-top: 3px;
+    word-break: break-all;
+  }
+</style>
+
 </head>
 <body>
 <div class="app">
@@ -161,6 +209,23 @@ button{font:inherit}
           </button>
         </div>
       </div>
+
+
+<div id="nest-auth-panel">
+  <div class="nest-auth-title">NEST 계정</div>
+  <div id="nest-auth-signed-out">
+    <button class="nest-login-btn" type="button" onclick="window.nestLogin && window.nestLogin()">
+      Google로 로그인
+    </button>
+  </div>
+  <div id="nest-auth-user">
+    <div id="nest-auth-name"></div>
+    <div id="nest-auth-email"></div>
+    <button class="nest-logout-btn" type="button" onclick="window.nestLogout && window.nestLogout()">
+      로그아웃
+    </button>
+  </div>
+</div>
 
 </aside>
 
@@ -366,6 +431,37 @@ render("전체");
   window.addEventListener("error", (event) => {
     if (event && event.error) console.error("NEST error:", event.error);
   });
+</script>
+
+
+<script>
+(function () {
+  function renderNestAuth(user) {
+    var out = document.getElementById('nest-auth-signed-out');
+    var logged = document.getElementById('nest-auth-user');
+    var name = document.getElementById('nest-auth-name');
+    var email = document.getElementById('nest-auth-email');
+    if (!out || !logged) return;
+
+    if (user) {
+      out.style.display = 'none';
+      logged.style.display = 'block';
+      name.textContent = user.displayName || '로그인 사용자';
+      email.textContent = user.email || '';
+    } else {
+      out.style.display = 'block';
+      logged.style.display = 'none';
+    }
+  }
+
+  window.addEventListener('nest-auth-changed', function (e) {
+    renderNestAuth(e.detail);
+  });
+
+  document.addEventListener('DOMContentLoaded', function () {
+    renderNestAuth(window.NEST_USER || null);
+  });
+})();
 </script>
 
 </body>
