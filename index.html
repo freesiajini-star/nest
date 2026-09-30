@@ -119,120 +119,150 @@ button{font:inherit}
   </script>
 
 
-<style id="nest-auth-visible-style">
-  #nest-auth-panel {
-    margin: 18px 14px 14px;
-    padding: 14px;
-    border-radius: 12px;
-    background: rgba(255,255,255,.08);
-    border: 1px solid rgba(255,255,255,.12);
+
+<style id="nest-auth-topbar-style">
+  .topbar{gap:18px}
+  @media (min-width:701px){
+    .sidebar{
+      width:220px;
+      padding:18px 12px 14px;
+      overflow-y:auto;
+      scrollbar-width:thin;
+    }
+    .logo{padding:0 12px 12px}
+    .menu-title{padding:0 12px;margin:10px 0 4px;font-size:10px}
+    .menu-button{padding:7px 12px;margin:1px 0;font-size:13px;line-height:1.2}
   }
-  #nest-auth-panel .nest-auth-title {
-    font-size: 11px;
-    opacity: .65;
-    margin-bottom: 8px;
+  #nest-auth-topbar{display:flex;align-items:center;gap:10px}
+  #nest-auth-topbar .nest-login-btn,
+  #nest-auth-topbar .nest-logout-btn{
+    border:1px solid #e1e4e8;border-radius:9px;background:#fff;
+    padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer;
   }
-  #nest-auth-panel button {
-    width: 100%;
-    border: 0;
-    border-radius: 9px;
-    padding: 10px 12px;
-    cursor: pointer;
-    font-weight: 700;
-    font-size: 13px;
+  #nest-auth-topbar .nest-login-btn:hover,
+  #nest-auth-topbar .nest-logout-btn:hover{background:#f6f7f8}
+  #nest-auth-user-top{display:none;align-items:center;gap:10px}
+  #nest-auth-name-top{font-size:12px;font-weight:700}
+  #nest-auth-email-top{font-size:11px;color:#8b9199}
+  @media (max-width:700px){
+    #nest-auth-email-top{display:none}
+    .topbar{padding:0 18px}
   }
-  #nest-auth-panel .nest-login-btn {
-    background: #fff;
-    color: #222;
+  /* PC dashboard: keep the first-glance dashboard compact and avoid horizontal scrolling. */
+  @media (min-width:1100px){
+    .content{padding:22px 30px 32px}
+    .page-intro{margin-bottom:16px}
+    .page-intro h1{font-size:25px}
+    .summary-grid{gap:12px;margin-bottom:14px}
+    .summary-card{padding:15px}
+    .summary-value{font-size:22px}
+    .grid-2{gap:14px;margin-bottom:14px}
+    .card{padding:17px}
+    .chart-placeholder{min-height:155px}
   }
-  #nest-auth-panel .nest-logout-btn {
-    background: transparent;
-    color: inherit;
-    border: 1px solid rgba(255,255,255,.2);
-    margin-top: 8px;
+</style>
+
+
+<style id="nest-sidebar-clean">
+@media (min-width:701px){
+  .sidebar{
+    width:220px;
+    padding:18px 12px 14px;
+    overflow-y:auto;
+    scrollbar-width:thin;
   }
-  #nest-auth-user {
-    display: none;
+  .logo{padding:0 12px 12px}
+  .menu-group{margin:0 0 12px}
+  .menu-title{
+    padding:0 12px 4px;
+    margin:9px 0 3px;
+    font-size:11px;
+    line-height:1.25;
+    font-weight:700;
+    color:#8f959d;
   }
-  #nest-auth-name {
-    font-weight: 700;
-    font-size: 13px;
+  .menu-items{
+    margin-left:7px;
+    padding-left:7px;
+    border-left:1px solid #e6e8eb;
   }
-  #nest-auth-email {
-    font-size: 11px;
-    opacity: .68;
-    margin-top: 3px;
-    word-break: break-all;
+  .menu-button{
+    width:100%;
+    padding:7px 11px;
+    margin:1px 0;
+    border:0;
+    border-radius:8px;
+    background:transparent;
+    text-align:left;
+    font-size:14px;
+    line-height:1.25;
+    color:#555b64;
+    cursor:pointer;
   }
+  .menu-button:hover{background:#f4f5f7}
+  .menu-button.active{
+    background:#eef2f7;
+    color:#20242a;
+    font-weight:700;
+  }
+}
 </style>
 
 </head>
 <body>
 <div class="app">
 <aside class="sidebar">
-  <div class="logo"><div class="logo-title">NEST</div><div class="logo-sub">Family Financial OS</div></div>
+  <div class="logo">
+    <div class="logo-title">NEST</div>
+    <div class="logo-sub">Family Financial OS</div>
+  </div>
 
-  <div class="menu-title">재무</div>
-  <button class="menu-button active" data-page="전체">전체</button>
-  <button class="menu-button" data-page="병원">병원</button>
-  <button class="menu-button" data-page="남편">남편</button>
-  <button class="menu-button" data-page="나">나</button>
-  <button class="menu-button" data-page="첫째">첫째</button>
-  <button class="menu-button" data-page="둘째">둘째</button>
-  <button class="menu-button" data-page="가정">가정</button>
-  <button class="menu-button" data-page="교육비">교육비</button>
-
-  <div class="menu-title">자산 관리</div>
-  <button class="menu-button" data-page="투자">투자</button>
-  <button class="menu-button" data-page="보험">보험</button>
-  <button class="menu-button" data-page="연금">연금</button>
-  <button class="menu-button" data-page="자산">자산</button>
-
-  <div class="menu-title">관리</div>
-  <button class="menu-button" data-page="거래">거래</button>
-  <button class="menu-button" data-page="물품">물품</button>
-
-  <div class="menu-title">시스템</div>
-  <button class="menu-button" data-page="설정">설정</button>
-
-      <div id="NEST_AUTH_UI" style="margin:18px 0 0;padding-top:16px;border-top:1px solid rgba(255,255,255,.12);">
-        <div id="nestSignedOut" style="display:none;">
-          <button type="button" onclick="nestLogin()" style="width:100%;padding:10px 12px;border:0;border-radius:10px;cursor:pointer;font-weight:700;">
-            Google로 로그인
-          </button>
-        </div>
-        <div id="nestSignedIn" style="display:none;">
-          <div id="nestUserName" style="font-size:13px;font-weight:700;margin-bottom:3px;"></div>
-          <div id="nestUserEmail" style="font-size:11px;opacity:.72;word-break:break-all;margin-bottom:9px;"></div>
-          <button type="button" onclick="nestLogout()" style="padding:7px 10px;border:1px solid rgba(255,255,255,.2);background:transparent;color:inherit;border-radius:8px;cursor:pointer;">
-            로그아웃
-          </button>
-        </div>
+  <nav class="sidebar-nav">
+    <section class="menu-group">
+      <div class="menu-title">재무</div>
+      <div class="menu-items">
+        <button class="menu-button active" data-page="전체">전체</button>
+        <button class="menu-button" data-page="병원">병원</button>
+        <button class="menu-button" data-page="가정">가정</button>
       </div>
+    </section>
 
+    <section class="menu-group">
+      <div class="menu-title">자산 관리</div>
+      <div class="menu-items">
+        <button class="menu-button" data-page="투자">투자</button>
+        <button class="menu-button" data-page="보험">보험</button>
+        <button class="menu-button" data-page="연금">연금</button>
+        <button class="menu-button" data-page="자산">자산</button>
+      </div>
+    </section>
 
-<div id="nest-auth-panel">
-  <div class="nest-auth-title">NEST 계정</div>
-  <div id="nest-auth-signed-out">
-    <button class="nest-login-btn" type="button" onclick="window.nestLogin && window.nestLogin()">
-      Google로 로그인
-    </button>
-  </div>
-  <div id="nest-auth-user">
-    <div id="nest-auth-name"></div>
-    <div id="nest-auth-email"></div>
-    <button class="nest-logout-btn" type="button" onclick="window.nestLogout && window.nestLogout()">
-      로그아웃
-    </button>
-  </div>
-</div>
-
+    <section class="menu-group">
+      <div class="menu-title">시스템</div>
+      <div class="menu-items">
+        <button class="menu-button" data-page="설정">설정</button>
+      </div>
+    </section>
+  </nav>
 </aside>
 
 <main class="main">
   <header class="topbar">
     <div class="page-title" id="pageTitle">전체</div>
-    <div class="update">실제 데이터 연결 전</div>
+    <div style="display:flex;align-items:center;gap:16px"><div class="update">실제 데이터 연결 전</div>
+<div id="nest-auth-topbar">
+  <div id="nest-auth-signed-out-top">
+    <button class="nest-login-btn" type="button" onclick="window.nestLogin && window.nestLogin()">Google로 로그인</button>
+  </div>
+  <div id="nest-auth-user-top">
+    <div>
+      <div id="nest-auth-name-top"></div>
+      <div id="nest-auth-email-top"></div>
+    </div>
+    <button class="nest-logout-btn" type="button" onclick="window.nestLogout && window.nestLogout()">로그아웃</button>
+  </div>
+</div>
+</div>
   </header>
   <section class="content" id="content"></section>
 </main>
@@ -404,63 +434,32 @@ function changeNetWorthPeriod(period){
 render("전체");
 </script>
 
-<script>
-  function updateNestAuthUI(user) {
-    const signedOut = document.getElementById("nestSignedOut");
-    const signedIn = document.getElementById("nestSignedIn");
-    const name = document.getElementById("nestUserName");
-    const email = document.getElementById("nestUserEmail");
 
-    if (!signedOut || !signedIn) return;
 
-    if (user) {
-      signedOut.style.display = "none";
-      signedIn.style.display = "block";
-      if (name) name.textContent = user.displayName || "로그인 사용자";
-      if (email) email.textContent = user.email || "";
-    } else {
-      signedOut.style.display = "block";
-      signedIn.style.display = "none";
-    }
-  }
 
-  window.addEventListener("nest-auth-changed", (event) => {
-    updateNestAuthUI(event.detail);
-  });
 
-  window.addEventListener("error", (event) => {
-    if (event && event.error) console.error("NEST error:", event.error);
-  });
-</script>
 
 
 <script>
-(function () {
-  function renderNestAuth(user) {
-    var out = document.getElementById('nest-auth-signed-out');
-    var logged = document.getElementById('nest-auth-user');
-    var name = document.getElementById('nest-auth-name');
-    var email = document.getElementById('nest-auth-email');
-    if (!out || !logged) return;
-
-    if (user) {
-      out.style.display = 'none';
-      logged.style.display = 'block';
-      name.textContent = user.displayName || '로그인 사용자';
-      email.textContent = user.email || '';
-    } else {
-      out.style.display = 'block';
-      logged.style.display = 'none';
+(function(){
+  function renderNestAuth(user){
+    var out=document.getElementById('nest-auth-signed-out-top');
+    var logged=document.getElementById('nest-auth-user-top');
+    var name=document.getElementById('nest-auth-name-top');
+    var email=document.getElementById('nest-auth-email-top');
+    if(!out || !logged) return;
+    if(user){
+      out.style.display='none';
+      logged.style.display='flex';
+      if(name) name.textContent=user.displayName || '로그인 사용자';
+      if(email) email.textContent=user.email || '';
+    }else{
+      out.style.display='block';
+      logged.style.display='none';
     }
   }
-
-  window.addEventListener('nest-auth-changed', function (e) {
-    renderNestAuth(e.detail);
-  });
-
-  document.addEventListener('DOMContentLoaded', function () {
-    renderNestAuth(window.NEST_USER || null);
-  });
+  window.addEventListener('nest-auth-changed',function(e){ renderNestAuth(e.detail); });
+  document.addEventListener('DOMContentLoaded',function(){ renderNestAuth(window.NEST_USER || null); });
 })();
 </script>
 
